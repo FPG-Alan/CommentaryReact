@@ -1,3 +1,6 @@
+import { noTimeout } from "../react-dom/ReactDOMHostConfig";
+import { createWorkInProgress } from "./ReactFiber";
+import { beginWork } from "./ReactFiberBeginWork";
 import { NoLanes, SyncLane } from "./ReactFiberLane";
 import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 
@@ -39,6 +42,32 @@ let pendingPassiveEffectsRenderPriority = NoPriority; // 90
 
 // A fatal error, if one is thrown
 let workInProgressRootFatalError = null;
+// Whether to root completed, errored, suspended, etc.
+let workInProgressRootExitStatus = RootIncomplete;
+
+// "Included" lanes refer to lanes that were worked on during this render. It's
+// slightly different than `renderLanes` because `renderLanes` can change as you
+// enter and exit an Offscreen tree. This value is the combination of all render
+// lanes for the entire render phase.
+let workInProgressRootIncludedLanes = NoLanes;
+
+// The work left over by components that were visited during this render. Only
+// includes unprocessed updates, not work in bailed out children.
+let workInProgressRootSkippedLanes = NoLanes;
+// Lanes that were updated (in an interleaved event) during this render.
+let workInProgressRootUpdatedLanes = NoLanes;
+// Lanes that were pinged (in an interleaved event) during this render.
+let workInProgressRootPingedLanes = NoLanes;
+
+// Stack that allows components to change the render lanes for its subtree
+// This is a superset of the lanes we started working on at the root. The only
+// case where it's different from `workInProgressRootRenderLanes` is when we
+// enter a subtree that is hidden and needs to be unhidden: Suspense and
+// Offscreen component.
+//
+// Most things in the work loop should deal with workInProgressRootRenderLanes.
+// Most things in begin/complete phases should deal with subtreeRenderLanes.
+let subtreeRenderLanes = NoLanes;
 
 
 const RENDER_TIMEOUT_MS = 500;
@@ -414,11 +443,17 @@ function renderRootSync(root, lanes) {
 
   // If the root or lanes have changed, throw out the existing stack
   // and prepare a fresh one. Otherwise we'll continue where we left off.
+  // 第一次渲染时， workInProgressRoot 为null, workInProgressRootRenderLanes 为NoLanes = 0, 执行这个分支
+  // 主要是生成workInProgress, 另外设置root上的一些属性
   if (workInProgressRoot !== root || workInProgressRootRenderLanes !== lanes) {
     prepareFreshStack(root, lanes);
+
+    // 暂时不懂
     startWorkOnPendingInteractions(root, lanes);
   }
 
+
+  // 这里没懂， 感觉workLoopSync就执行一次啊， 用do...while循环干嘛？
   do {
     try {
       workLoopSync();
@@ -447,14 +482,35 @@ function renderRootSync(root, lanes) {
   return workInProgressRootExitStatus;
 }
 
-// The work loop is an extremely hot path. Tell Closure not to inline it.
-/** @noinline */
 function workLoopSync() {
   // Already timed out, so perform work without checking if we need to yield.
+  // sync lane, 也可以说是一个超时的任务， 所以这里就不去检查是不是应该暂停了
+
   while (workInProgress !== null) {
     performUnitOfWork(workInProgress);
   }
 }
+
+function performUnitOfWork(unitOfWork) {
+  // The current, flushed, state of this fiber is the alternate. Ideally
+  // nothing should rely on this, but relying on it here means that we don't
+  // need an additional field on the work in progress.
+  const current = unitOfWork.alternate;
+
+  let next = beginWork(current, unitOfWork, subtreeRenderLanes);
+
+  unitOfWork.memoizedProps = unitOfWork.pendingProps;
+  if (next === null) {
+    // If this doesn't spawn new work, complete the current work.
+    completeUnitOfWork(unitOfWork);
+  } else {
+    workInProgress = next;
+  }
+
+  ReactCurrentOwner.current = null;
+}
+
+
 
 export function flushPassiveEffects() {
   // Returns whether passive effects were flushed.
@@ -483,4 +539,45 @@ export function flushPassiveEffects() {
 
   // 初次渲染时， pendingPassiveEffectsRenderPriority为默认值， 90， 应该走这条分路
   return false;
+}
+
+
+// 设置root上的一些属性
+// 设置该文件内的全局属性， 包括workInProgress等
+function prepareFreshStack(root, lanes) {
+  root.finishedWork = null;
+  root.finishedLanes = NoLanes;
+
+  const timeoutHandle = root.timeoutHandle;
+  // 如果root上的timeoutHandler不是noTimeout, 说明这个root之前被挂起过，且调度了一个timeout来commit一个后备状态
+  // 此时我们有了其他工作， 直接取消这个timeout
+  // 此处没有理解
+  if (timeoutHandle !== noTimeout) {
+    // The root previous suspended and scheduled a timeout to commit a fallback
+    // state. Now that we have additional work, cancel the timeout.
+    root.timeoutHandle = noTimeout;
+    // $FlowFixMe Complains noTimeout is not a TimeoutID, despite the check above
+    window.clearTimeout(timeoutHandle);
+  }
+
+
+  // 如果当前有工作正在进行
+  if (workInProgress !== null) {
+    let interruptedWork = workInProgress.return;
+    while (interruptedWork !== null) {
+      // 循环fiber树， 对每个fiber节点， 处理被打断的工作
+      // 处理细节暂时略过， 后面再看
+      unwindInterruptedWork(interruptedWork);
+      interruptedWork = interruptedWork.return;
+    }
+  }
+  workInProgressRoot = root;
+  // 创建wip fiber， 基本就是复制root.current
+  workInProgress = createWorkInProgress(root.current, null);
+  workInProgressRootRenderLanes = subtreeRenderLanes = workInProgressRootIncludedLanes = lanes;
+  workInProgressRootExitStatus = RootIncomplete;
+  workInProgressRootFatalError = null;
+  workInProgressRootSkippedLanes = NoLanes;
+  workInProgressRootUpdatedLanes = NoLanes;
+  workInProgressRootPingedLanes = NoLanes;
 }

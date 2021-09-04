@@ -157,7 +157,9 @@ function pickArbitraryLaneIndex(lanes) {
 function laneToIndex(lane) {
   return pickArbitraryLaneIndex(lane);
 }
-
+export function includesSomeLane(a, b) {
+  return (a & b) !== NoLanes;
+}
 
 
 
