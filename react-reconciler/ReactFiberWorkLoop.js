@@ -1,5 +1,5 @@
 import { NoLanes, SyncLane } from "./ReactFiberLane";
-import { BlockingMode, ConcurrentMode } from "./ReactTypeOfMode";
+import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 
 export const NoContext = /*             */ 0b0000000;
 const BatchedContext = /*               */ 0b0000001;
@@ -34,6 +34,13 @@ let workInProgressRootUpdatedLanes = NoLanes;
 let workInProgressRootRenderTargetTime = Infinity;
 // How long a render is supposed to take before we start following CPU
 // suspense heuristics and opt out of rendering more content.
+
+let pendingPassiveEffectsRenderPriority = NoPriority; // 90
+
+// A fatal error, if one is thrown
+let workInProgressRootFatalError = null;
+
+
 const RENDER_TIMEOUT_MS = 500;
 function resetRenderTimer() {
   workInProgressRootRenderTargetTime = window.performance.now();
@@ -51,94 +58,98 @@ export function unbatchedUpdates(fn, a) {
     if (executionContext === NoContext) {
       // Flush the immediate callbacks that were scheduled during this batch
       resetRenderTimer();
-      //   flushSyncCallbackQueue();
+      // concurrent mode 相关
+      flushSyncCallbackQueue();
     }
   }
 }
 
-// export function requestUpdateLane(fiber) {
-//   // Special cases
-//   const mode = fiber.mode;
-//   if ((mode & BlockingMode) === NoMode) {
-//     return SyncLane;
-//   } else if (
-//     !deferRenderPhaseUpdateToNextBatch &&
-//     (executionContext & RenderContext) !== NoContext &&
-//     workInProgressRootRenderLanes !== NoLanes
-//   ) {
-//     // This is a render phase update. These are not officially supported. The
-//     // old behavior is to give this the same "thread" (expiration time) as
-//     // whatever is currently rendering. So if you call `setState` on a component
-//     // that happens later in the same render, it will flush. Ideally, we want to
-//     // remove the special case and treat them as if they came from an
-//     // interleaved event. Regardless, this pattern is not officially supported.
-//     // This behavior is only a fallback. The flag only exists until we can roll
-//     // out the setState warning, since existing code might accidentally rely on
-//     // the current behavior.
-//     return pickArbitraryLane(workInProgressRootRenderLanes);
-//   }
+export function requestUpdateLane(fiber) {
+  // Special cases
+  const mode = fiber.mode;
+  // legacy 模式下， mode 为 NoMode = 0b00000
+  // NoMode和任何其他模式按位与的结果都应为NoMode 
+  if ((mode & BlockingMode) === NoMode) {
+    return SyncLane;
+  } else if (
+    !deferRenderPhaseUpdateToNextBatch &&
+    (executionContext & RenderContext) !== NoContext &&
+    workInProgressRootRenderLanes !== NoLanes
+  ) {
+    // This is a render phase update. These are not officially supported. The
+    // old behavior is to give this the same "thread" (expiration time) as
+    // whatever is currently rendering. So if you call `setState` on a component
+    // that happens later in the same render, it will flush. Ideally, we want to
+    // remove the special case and treat them as if they came from an
+    // interleaved event. Regardless, this pattern is not officially supported.
+    // This behavior is only a fallback. The flag only exists until we can roll
+    // out the setState warning, since existing code might accidentally rely on
+    // the current behavior.
+    return pickArbitraryLane(workInProgressRootRenderLanes);
+  }
 
-//   // The algorithm for assigning an update to a lane should be stable for all
-//   // updates at the same priority within the same event. To do this, the inputs
-//   // to the algorithm must be the same. For example, we use the `renderLanes`
-//   // to avoid choosing a lane that is already in the middle of rendering.
-//   //
-//   // However, the "included" lanes could be mutated in between updates in the
-//   // same event, like if you perform an update inside `flushSync`. Or any other
-//   // code path that might call `prepareFreshStack`.
-//   //
-//   // The trick we use is to cache the first of each of these inputs within an
-//   // event. Then reset the cached values once we can be sure the event is over.
-//   // Our heuristic for that is whenever we enter a concurrent work loop.
-//   //
-//   // We'll do the same for `currentEventPendingLanes` below.
-//   if (currentEventWipLanes === NoLanes) {
-//     currentEventWipLanes = workInProgressRootIncludedLanes;
-//   }
+  // The algorithm for assigning an update to a lane should be stable for all
+  // updates at the same priority within the same event. To do this, the inputs
+  // to the algorithm must be the same. For example, we use the `renderLanes`
+  // to avoid choosing a lane that is already in the middle of rendering.
+  //
+  // However, the "included" lanes could be mutated in between updates in the
+  // same event, like if you perform an update inside `flushSync`. Or any other
+  // code path that might call `prepareFreshStack`.
+  //
+  // The trick we use is to cache the first of each of these inputs within an
+  // event. Then reset the cached values once we can be sure the event is over.
+  // Our heuristic for that is whenever we enter a concurrent work loop.
+  //
+  // We'll do the same for `currentEventPendingLanes` below.
+  if (currentEventWipLanes === NoLanes) {
+    currentEventWipLanes = workInProgressRootIncludedLanes;
+  }
 
-//   const isTransition = requestCurrentTransition() !== NoTransition;
-//   if (isTransition) {
-//     if (currentEventPendingLanes !== NoLanes) {
-//       currentEventPendingLanes =
-//         mostRecentlyUpdatedRoot !== null
-//           ? mostRecentlyUpdatedRoot.pendingLanes
-//           : NoLanes;
-//     }
-//     return findTransitionLane(currentEventWipLanes, currentEventPendingLanes);
-//   }
+  const isTransition = requestCurrentTransition() !== NoTransition;
+  if (isTransition) {
+    if (currentEventPendingLanes !== NoLanes) {
+      currentEventPendingLanes =
+        mostRecentlyUpdatedRoot !== null
+          ? mostRecentlyUpdatedRoot.pendingLanes
+          : NoLanes;
+    }
+    return findTransitionLane(currentEventWipLanes, currentEventPendingLanes);
+  }
 
-//   // TODO: Remove this dependency on the Scheduler priority.
-//   // To do that, we're replacing it with an update lane priority.
-//   const schedulerPriority = getCurrentPriorityLevel();
+  // TODO: Remove this dependency on the Scheduler priority.
+  // To do that, we're replacing it with an update lane priority.
+  const schedulerPriority = getCurrentPriorityLevel();
 
-//   // The old behavior was using the priority level of the Scheduler.
-//   // This couples React to the Scheduler internals, so we're replacing it
-//   // with the currentUpdateLanePriority above. As an example of how this
-//   // could be problematic, if we're not inside `Scheduler.runWithPriority`,
-//   // then we'll get the priority of the current running Scheduler task,
-//   // which is probably not what we want.
-//   let lane;
-//   if (
-//     // TODO: Temporary. We're removing the concept of discrete updates.
-//     (executionContext & DiscreteEventContext) !== NoContext &&
-//     schedulerPriority === UserBlockingSchedulerPriority
-//   ) {
-//     lane = findUpdateLane(InputDiscreteLanePriority, currentEventWipLanes);
-//   } else {
-//     const schedulerLanePriority =
-//       schedulerPriorityToLanePriority(schedulerPriority);
+  // The old behavior was using the priority level of the Scheduler.
+  // This couples React to the Scheduler internals, so we're replacing it
+  // with the currentUpdateLanePriority above. As an example of how this
+  // could be problematic, if we're not inside `Scheduler.runWithPriority`,
+  // then we'll get the priority of the current running Scheduler task,
+  // which is probably not what we want.
+  let lane;
+  if (
+    // TODO: Temporary. We're removing the concept of discrete updates.
+    (executionContext & DiscreteEventContext) !== NoContext &&
+    schedulerPriority === UserBlockingSchedulerPriority
+  ) {
+    lane = findUpdateLane(InputDiscreteLanePriority, currentEventWipLanes);
+  } else {
+    const schedulerLanePriority =
+      schedulerPriorityToLanePriority(schedulerPriority);
 
-//     if (decoupleUpdatePriorityFromScheduler) {
-//       // In the new strategy, we will track the current update lane priority
-//       // inside React and use that priority to select a lane for this update.
-//       // For now, we're just logging when they're different so we can assess.
-//       const currentUpdateLanePriority = getCurrentUpdateLanePriority();
+    if (decoupleUpdatePriorityFromScheduler) {
+      // In the new strategy, we will track the current update lane priority
+      // inside React and use that priority to select a lane for this update.
+      // For now, we're just logging when they're different so we can assess.
+      const currentUpdateLanePriority = getCurrentUpdateLanePriority();
 
-//     lane = findUpdateLane(schedulerLanePriority, currentEventWipLanes);
-//   }
+      lane = findUpdateLane(schedulerLanePriority, currentEventWipLanes);
+    }
+  }
 
-//   return lane;
-// }
+  return lane;
+}
 
 /**
  * 1. 合并当前fiber.lanes字段以及从当前fiber向上查找直到host root fiber节点的childLanes字段
@@ -219,17 +230,18 @@ export function scheduleUpdateOnFiber(fiber, lane, eventTime) {
     ) {
       // Register pending interactions on the root to avoid losing traced interaction data.
       // 跟踪需要同步执行的updates，并计数、检测它们是否会报错
-      schedulePendingInteractions(root, lane);
+      // 应该是dev tools用的东西， 跳过
+      // schedulePendingInteractions(root, lane);
 
       // This is a legacy edge case. The initial mount of a ReactDOM.render-ed
       // root inside of batchedUpdates should be synchronous, but layout updates
       // should be deferred until the end of the batch.
 
-      // 准备进入render阶段??
+      // 准备进入render阶段
       performSyncWorkOnRoot(root);
     } else {
       ensureRootIsScheduled(root, eventTime);
-      schedulePendingInteractions(root, lane);
+      // schedulePendingInteractions(root, lane);
       if (executionContext === NoContext) {
         // Flush the synchronous work now, unless we're already working or inside
         // a batch. This is intentionally inside scheduleUpdateOnFiber instead of
@@ -259,7 +271,7 @@ export function scheduleUpdateOnFiber(fiber, lane, eventTime) {
     }
     // Schedule other updates after in case the callback is sync.
     ensureRootIsScheduled(root, eventTime);
-    schedulePendingInteractions(root, lane);
+    // schedulePendingInteractions(root, lane);
   }
 
   // We use this when assigning a lane for a transition inside
@@ -317,4 +329,158 @@ function markUpdateLaneFromFiberToRoot(sourceFiber, lane) {
   } else {
     return null;
   }
+}
+
+
+// This is the entry point for synchronous tasks that don't go
+// through Scheduler
+function performSyncWorkOnRoot(root) {
+  // 初次渲染时，什么都不做
+  flushPassiveEffects();
+
+  let lanes;
+  let exitStatus;
+  // 初次渲染时， workInProgressRoot为null, 跳过
+  if (
+    root === workInProgressRoot &&
+    includesSomeLane(root.expiredLanes, workInProgressRootRenderLanes)
+  ) {
+    // There's a partial tree, and at least one of its lanes has expired. Finish
+    // rendering it before rendering the rest of the expired work.
+    lanes = workInProgressRootRenderLanes;
+    exitStatus = renderRootSync(root, lanes);
+    if (
+      includesSomeLane(
+        workInProgressRootIncludedLanes,
+        workInProgressRootUpdatedLanes,
+      )
+    ) {
+      // The render included lanes that were updated during the render phase.
+      // For example, when unhiding a hidden tree, we include all the lanes
+      // that were previously skipped when the tree was hidden. That set of
+      // lanes is a superset of the lanes we started rendering with.
+      //
+      // Note that this only happens when part of the tree is rendered
+      // concurrently. If the whole tree is rendered synchronously, then there
+      // are no interleaved events.
+      lanes = getNextLanes(root, lanes);
+      exitStatus = renderRootSync(root, lanes);
+    }
+  } else {
+    lanes = getNextLanes(root, NoLanes);
+    exitStatus = renderRootSync(root, lanes);
+  }
+
+  if (root.tag !== LegacyRoot && exitStatus === RootErrored) {
+    executionContext |= RetryAfterError;
+
+    // If something threw an error, try rendering one more time. We'll render
+    // synchronously to block concurrent data mutations, and we'll includes
+    // all pending updates are included. If it still fails after the second
+    // attempt, we'll give up and commit the resulting tree.
+    lanes = getLanesToRetrySynchronouslyOnError(root);
+    if (lanes !== NoLanes) {
+      exitStatus = renderRootSync(root, lanes);
+    }
+  }
+
+  if (exitStatus === RootFatalErrored) {
+    const fatalError = workInProgressRootFatalError;
+    prepareFreshStack(root, NoLanes);
+    markRootSuspended(root, lanes);
+    ensureRootIsScheduled(root, now());
+    throw fatalError;
+  }
+
+  // We now have a consistent tree. Because this is a sync render, we
+  // will commit it even if something suspended.
+  const finishedWork = root.current.alternate;
+  root.finishedWork = finishedWork;
+  root.finishedLanes = lanes;
+  commitRoot(root);
+
+  // Before exiting, make sure there's a callback scheduled for the next
+  // pending level.
+  ensureRootIsScheduled(root, now());
+
+  return null;
+}
+
+
+function renderRootSync(root, lanes) {
+  const prevExecutionContext = executionContext;
+  executionContext |= RenderContext;
+  const prevDispatcher = pushDispatcher();
+
+  // If the root or lanes have changed, throw out the existing stack
+  // and prepare a fresh one. Otherwise we'll continue where we left off.
+  if (workInProgressRoot !== root || workInProgressRootRenderLanes !== lanes) {
+    prepareFreshStack(root, lanes);
+    startWorkOnPendingInteractions(root, lanes);
+  }
+
+  do {
+    try {
+      workLoopSync();
+      break;
+    } catch (thrownValue) {
+      handleError(root, thrownValue);
+    }
+  } while (true);
+  resetContextDependencies();
+
+  executionContext = prevExecutionContext;
+  popDispatcher(prevDispatcher);
+
+  if (workInProgress !== null) {
+    // This is a sync render, so we should have finished the whole tree.
+    invariant(
+      false,
+      'Cannot commit an incomplete root. This error is likely caused by a ' +
+        'bug in React. Please file an issue.',
+    );
+  }
+  // Set this to null to indicate there's no in-progress render.
+  workInProgressRoot = null;
+  workInProgressRootRenderLanes = NoLanes;
+
+  return workInProgressRootExitStatus;
+}
+
+// The work loop is an extremely hot path. Tell Closure not to inline it.
+/** @noinline */
+function workLoopSync() {
+  // Already timed out, so perform work without checking if we need to yield.
+  while (workInProgress !== null) {
+    performUnitOfWork(workInProgress);
+  }
+}
+
+export function flushPassiveEffects() {
+  // Returns whether passive effects were flushed.
+  // 如果进行中的xxx的优先级不是最低的（NoSchedulerPriority = NoPriority = 90）
+  // 就sss
+  if (pendingPassiveEffectsRenderPriority !== NoSchedulerPriority) {
+    const priorityLevel =
+      pendingPassiveEffectsRenderPriority > NormalSchedulerPriority
+        ? NormalSchedulerPriority
+        : pendingPassiveEffectsRenderPriority;
+    pendingPassiveEffectsRenderPriority = NoSchedulerPriority;
+    if (decoupleUpdatePriorityFromScheduler) {
+      const previousLanePriority = getCurrentUpdateLanePriority();
+      try {
+        setCurrentUpdateLanePriority(
+          schedulerPriorityToLanePriority(priorityLevel),
+        );
+        return runWithPriority(priorityLevel, flushPassiveEffectsImpl);
+      } finally {
+        setCurrentUpdateLanePriority(previousLanePriority);
+      }
+    } else {
+      return runWithPriority(priorityLevel, flushPassiveEffectsImpl);
+    }
+  }
+
+  // 初次渲染时， pendingPassiveEffectsRenderPriority为默认值， 90， 应该走这条分路
+  return false;
 }

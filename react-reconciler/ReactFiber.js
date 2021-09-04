@@ -1,6 +1,9 @@
 import { BlockingRoot, ConcurrentRoot } from "./ReactRootTags";
 import { BlockingMode, ConcurrentMode, StrictMode } from "./ReactTypeOfMode";
+import { HostRoot } from "./ReactWokTags";
 
+
+// legacy模式下， tag为LegacyRoot = 0, 对应mode为NoMode = 0b00000
 export function createHostRootFiber(tag) {
   let mode;
   if (tag === ConcurrentRoot) {
@@ -12,7 +15,7 @@ export function createHostRootFiber(tag) {
   }
 
   //   return createFiber(HostRoot, null, null, mode);
-  return new FiberNode(tag, null, null, mode);
+  return new FiberNode(HostRoot, null, null, mode);
 }
 
 function FiberNode(tag, pendingProps, key, mode) {
