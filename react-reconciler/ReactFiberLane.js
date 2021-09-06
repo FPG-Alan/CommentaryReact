@@ -134,11 +134,40 @@ function getHighestPriorityLanes(lanes) {
   return_highestLanePriority = DefaultLanePriority;
   return lanes;
 }
+
+// 本质上， 这个函数就是将lanes上， 所以值为1的位中， 除了最高位， 其他都设为0
+// 0b0000000001111111110000000000000 => 0b0000000001000000000000000000000
+// 0b0000000000000000000111000000000 => 0b0000000000000000000100000000000
+// ...
 function getLowestPriorityLane(lanes) {
   // This finds the most significant non-zero bit.
-  const index = 31 - clz32(lanes);
+  const index = 31 - Math.clz32(lanes);
+
+  //
   return index < 0 ? NoLanes : 1 << index;
 }
+
+/**
+ * (中文输入法会导致后面的二进制对不齐...)
+ * 1. if lanes = SyncBatchedLane & SyncLanes, said                   0b0000000000000000000000000000011
+ *  result of getLowestPriorityLane(lanes) is SyncBatchedLane, said  0b0000000000000000000000000000010
+ *  << 1                                                             0b0000000000000000000000000000100
+ *  - 1                                                              0b0000000000000000000000000000011
+ *
+ * 2. if lanes = SyncLanes, said                                     0b0000000000000000000000000000001
+ *  result of getLowestPriorityLane(SyncLanes) is SyncLanes, said    0b0000000000000000000000000000001
+ *  << 1                                                             0b0000000000000000000000000000010
+ *  - 1                                                              0b0000000000000000000000000000001
+ *
+ * 3. if lanes = TransitionLanes, said
+ * 0b0000000001111111110000000000000
+ * 0b0000000001000000000000000000000
+ * 0b0000000010000000000000000000000
+ * 0b0000000001111111111111111111111
+ *
+ *
+ * 所以这个函数本质上是先找到lanes中值为1的最高位， 这位设置为0， 其后所有位都设为1
+ */
 function getEqualOrHigherPriorityLanes(lanes) {
   return (getLowestPriorityLane(lanes) << 1) - 1;
 }
@@ -160,9 +189,6 @@ function laneToIndex(lane) {
 export function includesSomeLane(a, b) {
   return (a & b) !== NoLanes;
 }
-
-
-
 
 export function markRootUpdated(root, updateLane, eventTime) {
   // 当前更新的lane， 与fiber root node.pendingLanes字段merge
@@ -196,7 +222,6 @@ export function markRootUpdated(root, updateLane, eventTime) {
   eventTimes[index] = eventTime;
 }
 
-
 export function getNextLanes(root, wipLanes) {
   // 首次渲染时， 在本文件27行， 设置了root上的pendingLanes为1
   const pendingLanes = root.pendingLanes;
@@ -215,7 +240,7 @@ export function getNextLanes(root, wipLanes) {
   const pingedLanes = root.pingedLanes;
 
   // Check if any work has expired.
-  // 如果有过期的lane， 下一个lane即为这个过期的lane， 下一个lane优先级就是同步lane优先级 = 1
+  // 如果有过期的lane， 下一个lane即为这个过期的lane， 下一个lane优先级就是同步lane优先级 = 15
   // 初次渲染时不应该有过期lanes
   if (expiredLanes !== NoLanes) {
     nextLanes = expiredLanes;
@@ -232,7 +257,9 @@ export function getNextLanes(root, wipLanes) {
       if (nonIdleUnblockedLanes !== NoLanes) {
         // 正如变量名所示的， 现在的lanes是所有的非idle， 非blocked的lanes了
         // getHighestPriorityLanes使用一系列if， 找到在这些lanes中， 优先级最高的lanes
-        // SyncLane > SyncBatchedLane > InputDiscreteHydrationLane > inputDiscreteLanes > ... > idleLanes >  OffscreenLane 
+        // SyncLane > SyncBatchedLane > InputDiscreteHydrationLane > inputDiscreteLanes > ... > idleLanes >  OffscreenLane
+
+        // 初次渲染应该是这条分路
         nextLanes = getHighestPriorityLanes(nonIdleUnblockedLanes);
         nextLanePriority = return_highestLanePriority;
       } else {
@@ -248,7 +275,7 @@ export function getNextLanes(root, wipLanes) {
     } else {
       // The only remaining work is Idle.
       // 如果只存在idle lanes
-      // 和上面一样， 从这些lanes里面先选择所有的非suspended Lanes中优先级最高的， 
+      // 和上面一样， 从这些lanes里面先选择所有的非suspended Lanes中优先级最高的，
       const unblockedLanes = pendingLanes & ~suspendedLanes;
       if (unblockedLanes !== NoLanes) {
         nextLanes = getHighestPriorityLanes(unblockedLanes);
@@ -273,7 +300,9 @@ export function getNextLanes(root, wipLanes) {
 
   // If there are higher priority lanes, we'll include them even if they
   // are suspended.
-  // 这里没看懂， 但首次渲染时此处没有影响， 结果依然时 nextLanes = SyncLane
+  // getEqualOrHigherPriorityLanes 先在nextLanes上找到优先级最低的lane， 然后左移1位再减1
+  // 首次渲染时此处没有影响， 结果依然时 nextLanes = SyncLane
+  // 换句话说， 没有比SyncLane优先级更高的lane了
   nextLanes = pendingLanes & getEqualOrHigherPriorityLanes(nextLanes);
 
   // If we're already in the middle of a render, switching lanes will interrupt
@@ -318,7 +347,7 @@ export function getNextLanes(root, wipLanes) {
   // useMutableSource, we should ensure that there is no partial work at the
   // time we apply the entanglement.
   // 这段暂时不懂， 跳过
-  // 首次渲染时， entangledLanes为0 
+  // 首次渲染时， entangledLanes为0
   const entangledLanes = root.entangledLanes;
   if (entangledLanes !== NoLanes) {
     const entanglements = root.entanglements;

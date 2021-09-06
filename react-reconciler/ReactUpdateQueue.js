@@ -15,10 +15,10 @@ export const ReplaceState = 1;
 export const ForceUpdate = 2;
 export const CaptureUpdate = 3;
 
-export function cloneUpdateQueue(current,workInProgress) {
+export function cloneUpdateQueue(current, workInProgress) {
   // Clone the update queue from current. Unless it's already a clone.
   const queue = workInProgress.updateQueue;
-  const currentQueue  = current.updateQueue;
+  const currentQueue = current.updateQueue;
   if (queue === currentQueue) {
     // 这里是浅拷贝， 后面处理更新队列的时候需要注意
     // 修改workInProgress.updateQueue.shared会影响到current.updateQueue.shared
@@ -32,7 +32,6 @@ export function cloneUpdateQueue(current,workInProgress) {
     workInProgress.updateQueue = clone;
   }
 }
-
 
 export function createUpdate(eventTime, lane) {
   const update = {
@@ -67,16 +66,18 @@ export function enqueueUpdate(fiber, update) {
   sharedQueue.pending = update;
 }
 
-
-// 这里对updateQueue.shared上的循环链表进行操作
+/**
+ * 这里对[wip/current].updateQueue.shared上的循环链表进行操作
+ * 最终算出一个baseState存放在workInProgress.updateQueue上
+ */
 export function processUpdateQueue(
   workInProgress,
   props,
   instance,
-  renderLanes,
+  renderLanes
 ) {
   // This is always non-null on a ClassComponent or HostRoot
-  const queue = workInProgress.updateQueue
+  const queue = workInProgress.updateQueue;
 
   hasForceUpdate = false;
 
@@ -97,7 +98,7 @@ export function processUpdateQueue(
     // 这里解开头尾链接
     lastPendingUpdate.next = null;
     // Append pending updates to base queue
-    
+
     if (lastBaseUpdate === null) {
       // 之前没有更新队列
       firstBaseUpdate = firstPendingUpdate;
@@ -108,14 +109,15 @@ export function processUpdateQueue(
     // lastBaseUpdate指针移动到新的更新队列队尾
     lastBaseUpdate = lastPendingUpdate;
 
-    // If there's a current queue, and it's different from the base queue, then
+    // If there's a` current queue, and it's different from the base queue, then
     // we need to transfer the updates to that queue, too. Because the base
     // queue is a singly-linked list with no cycles, we can append to both
     // lists and take advantage of structural sharing.
-    // TODO: Pass `current` as argument
+    // TODO: Pass `current as argument
     const current = workInProgress.alternate;
     if (current !== null) {
       // This is always non-null on a ClassComponent or HostRoot
+      // 若存在current, 对current.updateQueue做类似的操作(firstBaseUpdate, lastBaseUpdate两个指针分别指向头/尾的单向链表)
       const currentQueue = current.updateQueue;
       const currentLastBaseUpdate = currentQueue.lastBaseUpdate;
       if (currentLastBaseUpdate !== lastBaseUpdate) {
@@ -146,6 +148,7 @@ export function processUpdateQueue(
       const updateLane = update.lane;
       const updateEventTime = update.eventTime;
       if (!isSubsetOfLanes(renderLanes, updateLane)) {
+        // 更新的lane不是renderLanes的子集， 这被认为是更新的权限不够
         // Priority is insufficient. Skip this update. If this is the first
         // skipped update, the previous update/state is the new base
         // update/state.
@@ -188,14 +191,17 @@ export function processUpdateQueue(
         }
 
         // Process this update.
+        // 初次渲染时， newState = update.payload, 一个包含key = elements, value为jsx elements数组的对象
         newState = getStateFromUpdate(
           workInProgress,
           queue,
           update,
           newState,
           props,
-          instance,
+          instance
         );
+
+        // 初次渲染， callBack为null
         const callback = update.callback;
         if (callback !== null) {
           workInProgress.flags |= Callback;
@@ -207,12 +213,16 @@ export function processUpdateQueue(
           }
         }
       }
+      // 链表向后遍历， 第一次渲染时这个链表只有一个元素， 因此下一个update为null
       update = update.next;
       if (update === null) {
+        // 这个pendingQueue已经在进入这个函数之后被设置为null了
         pendingQueue = queue.shared.pending;
         if (pendingQueue === null) {
+          // 没有更新了， 跳出循环
           break;
         } else {
+          // 暂时不管这里的逻辑
           // An update was scheduled from inside a reducer. Add the new
           // pending updates to the end of the list and keep processing.
           const lastPendingUpdate = pendingQueue;
@@ -227,23 +237,80 @@ export function processUpdateQueue(
       }
     } while (true);
 
+    // 初次渲染走这里， newBaseState得到值为newState
     if (newLastBaseUpdate === null) {
       newBaseState = newState;
     }
 
     queue.baseState = newBaseState;
+    // 这两个值在初次渲染时都为null
+    // 因为初次渲染时， queue单向链表只有一个值， 上面的while循环得到baseState之后这个链表就被消耗掉了
     queue.firstBaseUpdate = newFirstBaseUpdate;
     queue.lastBaseUpdate = newLastBaseUpdate;
 
     // Set the remaining expiration time to be whatever is remaining in the queue.
     // This should be fine because the only two other things that contribute to
-    // expiration time are props and context. We're already in the middle of the
-    // begin phase by the time we start processing the queue, so we've already
+    // expiration time are propsand context. We're already in the middle of the
+    // begin phase by the time we start processing the queue, so we've alread y
     // dealt with the props. Context in components that specify
     // shouldComponentUpdate is tricky; but we'll have to account for
     // that regardless.
+    // 暂时不太懂， 第一次渲染的直接结果是 newLanes = NoLanes 和 workLoop 中的全局变量 workInProgressRootSkippedLanes = NoLanes merge了
+    // 结果赋值给 workInProgressRootSkippedLanes
     markSkippedUpdateLanes(newLanes);
+    // lanes为newLanes = NoLanes = 0
     workInProgress.lanes = newLanes;
+    // 赋值memoizedState
     workInProgress.memoizedState = newState;
   }
+}
+
+function getStateFromUpdate(
+  workInProgress,
+  queue,
+  update,
+  prevState,
+  nextProps,
+  instance
+) {
+  // 初次渲染， tag为 UpdateState = 0
+  switch (update.tag) {
+    case ReplaceState: {
+      const payload = update.payload;
+      if (typeof payload === "function") {
+        // Updater function
+        const nextState = payload.call(instance, prevState, nextProps);
+        return nextState;
+      }
+      // State object
+      return payload;
+    }
+    case CaptureUpdate: {
+      workInProgress.flags =
+        (workInProgress.flags & ~ShouldCapture) | DidCapture;
+    }
+    // Intentional fallthrough
+    case UpdateState: {
+      const payload = update.payload;
+      let partialState;
+      if (typeof payload === "function") {
+        // Updater function
+        partialState = payload.call(instance, prevState, nextProps);
+      } else {
+        // Partial state object
+        partialState = payload;
+      }
+      if (partialState === null || partialState === undefined) {
+        // Null and undefined are treated as no-ops.
+        return prevState;
+      }
+      // Merge the partial state and the previous state.
+      return Object.assign({}, prevState, partialState);
+    }
+    case ForceUpdate: {
+      hasForceUpdate = true;
+      return prevState;
+    }
+  }
+  return prevState;
 }

@@ -1,7 +1,7 @@
 import { noTimeout } from "../react-dom/ReactDOMHostConfig";
 import { createWorkInProgress } from "./ReactFiber";
 import { beginWork } from "./ReactFiberBeginWork";
-import { NoLanes, SyncLane } from "./ReactFiberLane";
+import { getNextLanes, mergeLanes, NoLanes, SyncLane } from "./ReactFiberLane";
 import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 
 export const NoContext = /*             */ 0b0000000;
@@ -69,7 +69,6 @@ let workInProgressRootPingedLanes = NoLanes;
 // Most things in begin/complete phases should deal with subtreeRenderLanes.
 let subtreeRenderLanes = NoLanes;
 
-
 const RENDER_TIMEOUT_MS = 500;
 function resetRenderTimer() {
   workInProgressRootRenderTargetTime = window.performance.now();
@@ -97,7 +96,7 @@ export function requestUpdateLane(fiber) {
   // Special cases
   const mode = fiber.mode;
   // legacy 模式下， mode 为 NoMode = 0b00000
-  // NoMode和任何其他模式按位与的结果都应为NoMode 
+  // NoMode和任何其他模式按位与的结果都应为NoMode
   if ((mode & BlockingMode) === NoMode) {
     return SyncLane;
   } else if (
@@ -360,6 +359,12 @@ function markUpdateLaneFromFiberToRoot(sourceFiber, lane) {
   }
 }
 
+export function markSkippedUpdateLanes(lane) {
+  workInProgressRootSkippedLanes = mergeLanes(
+    lane,
+    workInProgressRootSkippedLanes
+  );
+}
 
 // This is the entry point for synchronous tasks that don't go
 // through Scheduler
@@ -381,7 +386,7 @@ function performSyncWorkOnRoot(root) {
     if (
       includesSomeLane(
         workInProgressRootIncludedLanes,
-        workInProgressRootUpdatedLanes,
+        workInProgressRootUpdatedLanes
       )
     ) {
       // The render included lanes that were updated during the render phase.
@@ -396,6 +401,8 @@ function performSyncWorkOnRoot(root) {
       exitStatus = renderRootSync(root, lanes);
     }
   } else {
+    // 根据当前的lanes得到下一个lane， 这个函数主要是要找到当前优先级最高的那个lane
+    // 初次渲染时当前lane为SyncLane, nextLanes也是SyncLane
     lanes = getNextLanes(root, NoLanes);
     exitStatus = renderRootSync(root, lanes);
   }
@@ -435,10 +442,13 @@ function performSyncWorkOnRoot(root) {
   return null;
 }
 
-
 function renderRootSync(root, lanes) {
+  // 初次渲染时 executionContext 为 LegacyUnbatchedContext = 8
+  // 这个值是在最开始， 调用updateContainer之前的那个函数里设置的
   const prevExecutionContext = executionContext;
+  // RenderContext = 16， 因此在按位或运算之后， executionContext为24
   executionContext |= RenderContext;
+  // 暂时不懂， 跳过不看
   const prevDispatcher = pushDispatcher();
 
   // If the root or lanes have changed, throw out the existing stack
@@ -451,7 +461,6 @@ function renderRootSync(root, lanes) {
     // 暂时不懂
     startWorkOnPendingInteractions(root, lanes);
   }
-
 
   // 这里没懂， 感觉workLoopSync就执行一次啊， 用do...while循环干嘛？
   do {
@@ -471,8 +480,8 @@ function renderRootSync(root, lanes) {
     // This is a sync render, so we should have finished the whole tree.
     invariant(
       false,
-      'Cannot commit an incomplete root. This error is likely caused by a ' +
-        'bug in React. Please file an issue.',
+      "Cannot commit an incomplete root. This error is likely caused by a " +
+        "bug in React. Please file an issue."
     );
   }
   // Set this to null to indicate there's no in-progress render.
@@ -485,7 +494,7 @@ function renderRootSync(root, lanes) {
 function workLoopSync() {
   // Already timed out, so perform work without checking if we need to yield.
   // sync lane, 也可以说是一个超时的任务， 所以这里就不去检查是不是应该暂停了
-
+  // 下面的while循环就是一个同步任务
   while (workInProgress !== null) {
     performUnitOfWork(workInProgress);
   }
@@ -495,6 +504,7 @@ function performUnitOfWork(unitOfWork) {
   // The current, flushed, state of this fiber is the alternate. Ideally
   // nothing should rely on this, but relying on it here means that we don't
   // need an additional field on the work in progress.
+  // 在第一次渲染的过程中， 每一次current都为null
   const current = unitOfWork.alternate;
 
   let next = beginWork(current, unitOfWork, subtreeRenderLanes);
@@ -504,13 +514,13 @@ function performUnitOfWork(unitOfWork) {
     // If this doesn't spawn new work, complete the current work.
     completeUnitOfWork(unitOfWork);
   } else {
+    // 循环， 第一次到达这里时， next应该是 host fiber root 的child, 事实上是我们的应用的根节点对应的fiber节点，
+    // 对应学习的例子里， 这个fiber节点对应 <App>...</App>
     workInProgress = next;
   }
 
   ReactCurrentOwner.current = null;
 }
-
-
 
 export function flushPassiveEffects() {
   // Returns whether passive effects were flushed.
@@ -526,7 +536,7 @@ export function flushPassiveEffects() {
       const previousLanePriority = getCurrentUpdateLanePriority();
       try {
         setCurrentUpdateLanePriority(
-          schedulerPriorityToLanePriority(priorityLevel),
+          schedulerPriorityToLanePriority(priorityLevel)
         );
         return runWithPriority(priorityLevel, flushPassiveEffectsImpl);
       } finally {
@@ -540,7 +550,6 @@ export function flushPassiveEffects() {
   // 初次渲染时， pendingPassiveEffectsRenderPriority为默认值， 90， 应该走这条分路
   return false;
 }
-
 
 // 设置root上的一些属性
 // 设置该文件内的全局属性， 包括workInProgress等
@@ -560,7 +569,6 @@ function prepareFreshStack(root, lanes) {
     window.clearTimeout(timeoutHandle);
   }
 
-
   // 如果当前有工作正在进行
   if (workInProgress !== null) {
     let interruptedWork = workInProgress.return;
@@ -574,7 +582,10 @@ function prepareFreshStack(root, lanes) {
   workInProgressRoot = root;
   // 创建wip fiber， 基本就是复制root.current
   workInProgress = createWorkInProgress(root.current, null);
-  workInProgressRootRenderLanes = subtreeRenderLanes = workInProgressRootIncludedLanes = lanes;
+  workInProgressRootRenderLanes =
+    subtreeRenderLanes =
+    workInProgressRootIncludedLanes =
+      lanes;
   workInProgressRootExitStatus = RootIncomplete;
   workInProgressRootFatalError = null;
   workInProgressRootSkippedLanes = NoLanes;
