@@ -219,6 +219,7 @@ export function createFiberFromTypeAndProps(
   }
 
   // 如果没能解析出type， resolvedType就是一开始的type
+  // 目前我所知的情况下, 如果这里没有解析出不同的结果, fiberTag为初始值 IndeterminateComponent = 2, 其实就是函数组件
   const fiber = createFiber(fiberTag, pendingProps, key, mode);
   fiber.elementType = type;
   fiber.type = resolvedType;

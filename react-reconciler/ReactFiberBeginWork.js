@@ -29,6 +29,7 @@ import { cloneUpdateQueue, processUpdateQueue } from "./ReactUpdateQueue";
 import { ForceUpdateForLegacySuspense } from "./ReactFiberFlags";
 import { includesSomeLane } from "./ReactFiberLane";
 import { reconcileChildFibers } from "./ReactChildFiber";
+import { renderWithHooks } from "./ReactFiberHooks";
 
 let didReceiveUpdate = false;
 
@@ -290,6 +291,7 @@ function beginWork(current, workInProgress, renderLanes) {
   // 初次渲染， 第二次loop， 这里的wip应该是 项目应用根节点， 在我学习的列子中为<App>, tag 为 IndeterminateComponent = 2
   switch (workInProgress.tag) {
     case IndeterminateComponent: {
+      // 最终返回的是<App>下的第一个child节点, 一个HTMLDivELement节点
       return mountIndeterminateComponent(
         current,
         workInProgress,
@@ -492,12 +494,15 @@ function updateHostRoot(current, workInProgress, renderLanes) {
   return workInProgress.child;
 }
 
+// mount Indeterminate(函数??) 组件
 function mountIndeterminateComponent(
   _current,
   workInProgress,
   Component,
   renderLanes
 ) {
+
+  // 特殊情况我们先不考虑
   if (_current !== null) {
     // An indeterminate component only mounts if it suspended inside a non-
     // concurrent tree, in an inconsistent state. We want to treat it like
@@ -509,12 +514,18 @@ function mountIndeterminateComponent(
     workInProgress.flags |= Placement;
   }
 
+  // 这里的pendingProps是jsx上的对应节点的props
   const props = workInProgress.pendingProps;
   let context;
 
+
+  // context相关暂时不管
   prepareToReadContext(workInProgress, renderLanes);
   let value;
 
+  // hooks??
+  // 之前有提到过, 如果一个fiber的tag = IndeterminateComponent = 2, 其实就是一个函数组件
+  // 暂时理解为调用函数组件进行渲染, 得到的应该是一些jsx
   value = renderWithHooks(
     null,
     workInProgress,
@@ -526,9 +537,11 @@ function mountIndeterminateComponent(
   // React DevTools reads this flag.
   workInProgress.flags |= PerformedWork;
 
+  // 注释说会删掉的...那就不看了
   if (
     // Run these checks in production only if the flag is off.
     // Eventually we'll delete this branch altogether.
+    // disableModulePatternComponents 是一个 react feature flag, 应该是在编译时确定的
     !disableModulePatternComponents &&
     typeof value === "object" &&
     value !== null &&
@@ -580,8 +593,12 @@ function mountIndeterminateComponent(
     );
   } else {
     // Proceed under the assumption that this is a function component
+    // 这边确定了是一个 FunctionComponent , 也就是 IndeterminateComponent => FunctionComponent
     workInProgress.tag = FunctionComponent;
+
+    // 创建下一个节点
     reconcileChildren(null, workInProgress, value, renderLanes);
+    // 返回下一个节点
     return workInProgress.child;
   }
 }

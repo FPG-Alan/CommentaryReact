@@ -512,6 +512,9 @@ function performUnitOfWork(unitOfWork) {
   unitOfWork.memoizedProps = unitOfWork.pendingProps;
   if (next === null) {
     // If this doesn't spawn new work, complete the current work.
+
+    // 根据jsx结构, 循环并创建了一棵完整的fiber树
+    // 完成渲染阶段的工作??
     completeUnitOfWork(unitOfWork);
   } else {
     // 循环， 第一次到达这里时， next应该是 host fiber root 的child, 事实上是我们的应用的根节点对应的fiber节点，
@@ -520,6 +523,113 @@ function performUnitOfWork(unitOfWork) {
   }
 
   ReactCurrentOwner.current = null;
+}
+
+
+function completeUnitOfWork(unitOfWork) {
+  // Attempt to complete the current unit of work, then move to the next
+  // sibling. If there are no more siblings, return to the parent fiber.
+  let completedWork = unitOfWork;
+  do {
+    // The current, flushed, state of this fiber is the alternate. Ideally
+    // nothing should rely on this, but relying on it here means that we don't
+    // need an additional field on the work in progress.
+    const current = completedWork.alternate;
+    const returnFiber = completedWork.return;
+
+    // Check if the work completed or if something threw.
+    if ((completedWork.flags & Incomplete) === NoFlags) {
+      let next;
+      next = completeWork(current, completedWork, subtreeRenderLanes);
+
+      if (next !== null) {
+        // Completing this fiber spawned new work. Work on that next.
+        workInProgress = next;
+        return;
+      }
+
+      resetChildLanes(completedWork);
+
+      if (
+        returnFiber !== null &&
+        // Do not append effects to parents if a sibling failed to complete
+        (returnFiber.flags & Incomplete) === NoFlags
+      ) {
+        // Append all the effects of the subtree and this fiber onto the effect
+        // list of the parent. The completion order of the children affects the
+        // side-effect order.
+        if (returnFiber.firstEffect === null) {
+          returnFiber.firstEffect = completedWork.firstEffect;
+        }
+        if (completedWork.lastEffect !== null) {
+          if (returnFiber.lastEffect !== null) {
+            returnFiber.lastEffect.nextEffect = completedWork.firstEffect;
+          }
+          returnFiber.lastEffect = completedWork.lastEffect;
+        }
+
+        // If this fiber had side-effects, we append it AFTER the children's
+        // side-effects. We can perform certain side-effects earlier if needed,
+        // by doing multiple passes over the effect list. We don't want to
+        // schedule our own side-effect on our own list because if end up
+        // reusing children we'll schedule this effect onto itself since we're
+        // at the end.
+        const flags = completedWork.flags;
+
+        // Skip both NoWork and PerformedWork tags when creating the effect
+        // list. PerformedWork effect is read by React DevTools but shouldn't be
+        // committed.
+        if (flags > PerformedWork) {
+          if (returnFiber.lastEffect !== null) {
+            returnFiber.lastEffect.nextEffect = completedWork;
+          } else {
+            returnFiber.firstEffect = completedWork;
+          }
+          returnFiber.lastEffect = completedWork;
+        }
+      }
+    } else {
+      // This fiber did not complete because something threw. Pop values off
+      // the stack without entering the complete phase. If this is a boundary,
+      // capture values if possible.
+      const next = unwindWork(completedWork, subtreeRenderLanes);
+
+      // Because this fiber did not complete, don't reset its expiration time.
+
+      if (next !== null) {
+        // If completing this work spawned new work, do that next. We'll come
+        // back here again.
+        // Since we're restarting, remove anything that is not a host effect
+        // from the effect tag.
+        next.flags &= HostEffectMask;
+        workInProgress = next;
+        return;
+      }
+
+
+      if (returnFiber !== null) {
+        // Mark the parent fiber as incomplete and clear its effect list.
+        returnFiber.firstEffect = returnFiber.lastEffect = null;
+        returnFiber.flags |= Incomplete;
+      }
+    }
+
+    const siblingFiber = completedWork.sibling;
+    if (siblingFiber !== null) {
+      // If there is more work to do in this returnFiber, do that next.
+      workInProgress = siblingFiber;
+      return;
+    }
+    // Otherwise, return to the parent
+    completedWork = returnFiber;
+    // Update the next thing we're working on in case something throws.
+    workInProgress = completedWork;
+  } while (completedWork !== null);
+
+  // We've reached the root.
+  if (workInProgressRootExitStatus === RootIncomplete) {
+    workInProgressRootExitStatus = RootCompleted;
+  }
 }
 
 export function flushPassiveEffects() {
