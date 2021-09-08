@@ -72,7 +72,7 @@ function beginWork(current, workInProgress, renderLanes) {
   const updateLanes = workInProgress.lanes;
 
   // 下面if else流程设置 didReceiveUpdate 的值
-  // 首次渲染， didReceiveUpdate应为false
+  // 首次渲染， didReceiveUpdate 应为false
   if (current !== null) {
     const oldProps = current.memoizedProps;
     const newProps = workInProgress.pendingProps;
@@ -494,14 +494,13 @@ function updateHostRoot(current, workInProgress, renderLanes) {
   return workInProgress.child;
 }
 
-// mount Indeterminate(函数??) 组件
+// mount Indeterminate(函数) 组件
 function mountIndeterminateComponent(
   _current,
   workInProgress,
   Component,
   renderLanes
 ) {
-
   // 特殊情况我们先不考虑
   if (_current !== null) {
     // An indeterminate component only mounts if it suspended inside a non-
@@ -517,7 +516,6 @@ function mountIndeterminateComponent(
   // 这里的pendingProps是jsx上的对应节点的props
   const props = workInProgress.pendingProps;
   let context;
-
 
   // context相关暂时不管
   prepareToReadContext(workInProgress, renderLanes);

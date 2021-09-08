@@ -1,3 +1,5 @@
+// 这里面的 host 应该是指宿主上的对应类型
+// 比如 HostText, 如果宿主是react-dom, HostText应该是HTMLTextNode
 export const FunctionComponent = 0;
 export const ClassComponent = 1;
 export const IndeterminateComponent = 2; // Before we know whether it is function or class

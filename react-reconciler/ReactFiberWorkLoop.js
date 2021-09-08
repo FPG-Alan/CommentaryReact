@@ -1,8 +1,10 @@
 import { noTimeout } from "../react-dom/ReactDOMHostConfig";
 import { createWorkInProgress } from "./ReactFiber";
 import { beginWork } from "./ReactFiberBeginWork";
+import { PerformedWork } from "./ReactFiberFlags";
 import { getNextLanes, mergeLanes, NoLanes, SyncLane } from "./ReactFiberLane";
 import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
+import { LegacyHiddenComponent, OffscreenComponent } from "./ReactWokTags";
 
 export const NoContext = /*             */ 0b0000000;
 const BatchedContext = /*               */ 0b0000001;
@@ -420,6 +422,7 @@ function performSyncWorkOnRoot(root) {
     }
   }
 
+  // 正常退出应该是 RootCompleted = 5
   if (exitStatus === RootFatalErrored) {
     const fatalError = workInProgressRootFatalError;
     prepareFreshStack(root, NoLanes);
@@ -433,6 +436,9 @@ function performSyncWorkOnRoot(root) {
   const finishedWork = root.current.alternate;
   root.finishedWork = finishedWork;
   root.finishedLanes = lanes;
+
+  // 最后一步， 最后，他妈的， 一步
+  // commit 阶段
   commitRoot(root);
 
   // Before exiting, make sure there's a callback scheduled for the next
@@ -471,6 +477,7 @@ function renderRootSync(root, lanes) {
       handleError(root, thrownValue);
     }
   } while (true);
+
   resetContextDependencies();
 
   executionContext = prevExecutionContext;
@@ -507,14 +514,15 @@ function performUnitOfWork(unitOfWork) {
   // 在第一次渲染的过程中， 每一次current都为null
   const current = unitOfWork.alternate;
 
+  // next 应该是 unitOfWork.child
   let next = beginWork(current, unitOfWork, subtreeRenderLanes);
 
   unitOfWork.memoizedProps = unitOfWork.pendingProps;
   if (next === null) {
     // If this doesn't spawn new work, complete the current work.
 
-    // 根据jsx结构, 循环并创建了一棵完整的fiber树
-    // 完成渲染阶段的工作??
+    // 没有 child 节点了, 深度优先搜索触底了
+    // (completeUnitOfWork 还有可能产生新的工作)...
     completeUnitOfWork(unitOfWork);
   } else {
     // 循环， 第一次到达这里时， next应该是 host fiber root 的child, 事实上是我们的应用的根节点对应的fiber节点，
@@ -525,39 +533,51 @@ function performUnitOfWork(unitOfWork) {
   ReactCurrentOwner.current = null;
 }
 
-
+// 因为是深度优先搜索, 首次渲染时, 第一个到达这里的 unitOfWork 应该是fiber最深层的节点
+// 在我用于学习的例子里， 这个fiber节点是一个tag = HostText = 6 文本节点
 function completeUnitOfWork(unitOfWork) {
   // Attempt to complete the current unit of work, then move to the next
   // sibling. If there are no more siblings, return to the parent fiber.
+  // 完成当前节点的工作
+  // 移动到sibling, 若sibling不存在则移动到当前节点的父级
+
   let completedWork = unitOfWork;
   do {
     // The current, flushed, state of this fiber is the alternate. Ideally
     // nothing should rely on this, but relying on it here means that we don't
     // need an additional field on the work in progress.
+    // 如果是首次渲染， 这里的completedWork.alternate应该为null， 此时的wip tree是第一棵完整的fiber tree
     const current = completedWork.alternate;
+    // 父级， 应该存在
     const returnFiber = completedWork.return;
 
     // Check if the work completed or if something threw.
+    // 正常情况下应该是NoFlags = 0, 按位与后应该是NoFlags
     if ((completedWork.flags & Incomplete) === NoFlags) {
       let next;
       next = completeWork(current, completedWork, subtreeRenderLanes);
 
+      // 上面说completeUnitOfWork可能会产生新的工作就是这里了
       if (next !== null) {
         // Completing this fiber spawned new work. Work on that next.
         workInProgress = next;
         return;
       }
 
+      // 设置fiber.childLanes, 具体为啥暂时不懂
       resetChildLanes(completedWork);
 
       if (
         returnFiber !== null &&
         // Do not append effects to parents if a sibling failed to complete
+        // 判断父级是否在Incomplete状态(父级在这个状态说明有个兄弟节点没有完成)
         (returnFiber.flags & Incomplete) === NoFlags
       ) {
         // Append all the effects of the subtree and this fiber onto the effect
         // list of the parent. The completion order of the children affects the
         // side-effect order.
+        // 在父级上append当前节点的副作用
+        // 这是一个链表
         if (returnFiber.firstEffect === null) {
           returnFiber.firstEffect = completedWork.firstEffect;
         }
@@ -579,6 +599,8 @@ function completeUnitOfWork(unitOfWork) {
         // Skip both NoWork and PerformedWork tags when creating the effect
         // list. PerformedWork effect is read by React DevTools but shouldn't be
         // committed.
+        // 如果当前fiber节点的flags不是NoFlags或PerformedWork， 把这个节点本身加到父级的副作用列表上
+        // 为啥要这样暂时也不知道
         if (flags > PerformedWork) {
           if (returnFiber.lastEffect !== null) {
             returnFiber.lastEffect.nextEffect = completedWork;
@@ -589,6 +611,8 @@ function completeUnitOfWork(unitOfWork) {
         }
       }
     } else {
+      // 初次渲染时不会走这条分支
+      // 暂时掠过
       // This fiber did not complete because something threw. Pop values off
       // the stack without entering the complete phase. If this is a boundary,
       // capture values if possible.
@@ -605,7 +629,6 @@ function completeUnitOfWork(unitOfWork) {
         workInProgress = next;
         return;
       }
-
 
       if (returnFiber !== null) {
         // Mark the parent fiber as incomplete and clear its effect list.
@@ -630,6 +653,36 @@ function completeUnitOfWork(unitOfWork) {
   if (workInProgressRootExitStatus === RootIncomplete) {
     workInProgressRootExitStatus = RootCompleted;
   }
+}
+
+function resetChildLanes(completedWork) {
+  // 这一段暂时不看
+  if (
+    // TODO: Move this check out of the hot path by moving `resetChildLanes`
+    // to switch statement in `completeWork`.
+    (completedWork.tag === LegacyHiddenComponent ||
+      completedWork.tag === OffscreenComponent) &&
+    completedWork.memoizedState !== null &&
+    !includesSomeLane(subtreeRenderLanes, OffscreenLane) &&
+    (completedWork.mode & ConcurrentMode) !== NoLanes
+  ) {
+    // The children of this component are hidden. Don't bubble their
+    // expiration times.
+    return;
+  }
+
+  let newChildLanes = NoLanes;
+
+  let child = completedWork.child;
+  while (child !== null) {
+    newChildLanes = mergeLanes(
+      newChildLanes,
+      mergeLanes(child.lanes, child.childLanes)
+    );
+    child = child.sibling;
+  }
+
+  completedWork.childLanes = newChildLanes;
 }
 
 export function flushPassiveEffects() {
