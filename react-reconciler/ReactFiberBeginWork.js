@@ -68,6 +68,11 @@ export function reconcileChildren(
   }
 }
 
+/**
+ * 1. 标记 didReceiveUpdate
+ * 2. 清除 wip.lanes
+ * 3. 根据 wip.tag 分发处理函数
+ */
 function beginWork(current, workInProgress, renderLanes) {
   const updateLanes = workInProgress.lanes;
 
@@ -467,6 +472,10 @@ function pushHostRootContext(workInProgress) {
   pushHostContainer(workInProgress, root.containerInfo);
 }
 
+/**
+ * 1. 根据 wip.updateQueue, 计算 nextState
+ * 2. 调用 reconcileChildren, 生成 wip.child
+ */
 function updateHostRoot(current, workInProgress, renderLanes) {
   // context相关暂时不看
   pushHostRootContext(workInProgress);
