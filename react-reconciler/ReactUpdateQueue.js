@@ -47,6 +47,28 @@ export function createUpdate(eventTime, lane) {
   return update;
 }
 
+/**
+ * 多个update压入之后形成一个循环链表, 过程如下
+ * -------------------------------
+ * 只有一个update时
+ * pending
+ *  |
+ * up1 ---> up1
+ * --------------------------------
+ * 两个update:
+ *        pending
+ *           |
+ * up1 ---> up2
+ *  ^--------|
+ * --------------------------------
+ * 三个update:
+ *                 pending
+ *                    |
+ * up1 ---> up2 ---> up3
+ *  ^-----------------|
+ *
+ * 以此类推
+ */
 export function enqueueUpdate(fiber, update) {
   const updateQueue = fiber.updateQueue;
   if (updateQueue === null) {
@@ -95,10 +117,23 @@ export function processUpdateQueue(
     // 一个指针（pendingQueue）, 直接获得队列的头和尾
     const lastPendingUpdate = pendingQueue;
     const firstPendingUpdate = lastPendingUpdate.next;
+
     // 这里解开头尾链接
     lastPendingUpdate.next = null;
-    // Append pending updates to base queue
 
+    // 若存在3个pendingUpdate, 当前示意图如下
+    //
+    // lastPendingUpdate
+    //        |
+    //       up3      up1 --> up2
+    //        ^--------|-------|
+    //                 |
+    //         firstPendingQueue
+    //
+    // 这之后我们就得到了一个单向链表 firstPendingQueue = up1 -> up2 -> up3 = lastPendingUpdate
+
+    // Append pending updates to base queue
+    // 把上面的单向链表接到 baseUpdate 单向链表后面
     if (lastBaseUpdate === null) {
       // 之前没有更新队列
       firstBaseUpdate = firstPendingUpdate;
@@ -118,6 +153,7 @@ export function processUpdateQueue(
     if (current !== null) {
       // This is always non-null on a ClassComponent or HostRoot
       // 若存在current, 对current.updateQueue做类似的操作(firstBaseUpdate, lastBaseUpdate两个指针分别指向头/尾的单向链表)
+      // 这里有个疑问， 为何要对current做同样的操作? wip在构建完成之后不是直接替代了current吗?
       const currentQueue = current.updateQueue;
       const currentLastBaseUpdate = currentQueue.lastBaseUpdate;
       if (currentLastBaseUpdate !== lastBaseUpdate) {
@@ -192,6 +228,8 @@ export function processUpdateQueue(
 
         // Process this update.
         // 初次渲染时， newState = update.payload, 一个包含key = elements, value为jsx elements数组的对象
+
+        // newState在初次渲染时就是update.payload = {elements: jsx...}
         newState = getStateFromUpdate(
           workInProgress,
           queue,

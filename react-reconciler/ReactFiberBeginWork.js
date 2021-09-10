@@ -26,7 +26,7 @@ import {
 } from "./ReactWokTags";
 import { cloneUpdateQueue, processUpdateQueue } from "./ReactUpdateQueue";
 
-import { ForceUpdateForLegacySuspense } from "./ReactFiberFlags";
+import { ForceUpdateForLegacySuspense, PerformedWork } from "./ReactFiberFlags";
 import { includesSomeLane } from "./ReactFiberLane";
 import { reconcileChildFibers } from "./ReactChildFiber";
 import { renderWithHooks } from "./ReactFiberHooks";
@@ -486,6 +486,7 @@ function updateHostRoot(current, workInProgress, renderLanes) {
   cloneUpdateQueue(current, workInProgress);
   processUpdateQueue(workInProgress, nextProps, null, renderLanes);
   // nextState 就是上一步 processUpdateQueue 根据wip.updateQueue 算出来的
+  // 初次渲染时就是updateQueue.pendingUpdate.payload
   const nextState = workInProgress.memoizedState;
   // Caution: React DevTools currently depends on this property
   // being called "element".
@@ -532,7 +533,17 @@ function mountIndeterminateComponent(
 
   // hooks??
   // 之前有提到过, 如果一个fiber的tag = IndeterminateComponent = 2, 其实就是一个函数组件
-  // 暂时理解为调用函数组件进行渲染, 得到的应该是一些jsx
+  // 暂时理解为调用函数组件进行渲染, 得到的应该是一个jsx对象
+  // 在我学习的例子里, 是下面这样的对象
+  // $$typeof: Symbol(react.element)
+  // key: null
+  // props: {className: 'App', children: {…}}
+  // ref: null
+  // type: "div"
+  // _owner: FiberNode {tag: 2, key: null, stateNode: null, elementType: ƒ, type: ƒ, …}
+  // _store: {validated: false}
+  // _self: null
+  // _source: null
   value = renderWithHooks(
     null,
     workInProgress,
@@ -542,6 +553,7 @@ function mountIndeterminateComponent(
     renderLanes
   );
   // React DevTools reads this flag.
+  // wip flags是上一轮创建wip这个fiber时设置的, 此处应该是 Placement = 3;
   workInProgress.flags |= PerformedWork;
 
   // 注释说会删掉的...那就不看了

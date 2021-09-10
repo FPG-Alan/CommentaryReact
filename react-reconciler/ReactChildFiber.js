@@ -96,12 +96,15 @@ function ChildReconciler(shouldTrackSideEffects) {
   function placeSingleChild(newFiber) {
     // This is simpler for the single child case. We only need to do a
     // placement for inserting new children.
+    // 标记一下， 这是一个还没有mount的fiber节点
     if (shouldTrackSideEffects && newFiber.alternate === null) {
       newFiber.flags = Placement;
     }
     return newFiber;
   }
 
+  // 初次渲染， 第一个child走这里
+  // 函数签名跟分发函数 reconcileChildFibers 一样的
   function reconcileSingleElement(
     returnFiber,
     currentFirstChild,
@@ -188,6 +191,8 @@ function ChildReconciler(shouldTrackSideEffects) {
   }
 
   // children and the parent.
+
+  // 根据newChild.tag, 分发child的处理函数
   function reconcileChildFibers(
     returnFiber,
     currentFirstChild,
@@ -216,6 +221,7 @@ function ChildReconciler(shouldTrackSideEffects) {
     const isObject = typeof newChild === "object" && newChild !== null;
 
     if (isObject) {
+      // 初次渲染时， newChild.$$typeof = REACT_ELEMENT_TYPE = Symbol(react.element)
       switch (newChild.$$typeof) {
         case REACT_ELEMENT_TYPE:
           return placeSingleChild(
