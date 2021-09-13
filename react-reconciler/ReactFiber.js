@@ -141,6 +141,7 @@ export function createFiberFromTypeAndProps(
       fiberTag = ClassComponent;
     }
   } else if (typeof type === "string") {
+    // 我学习的例子里， 初次渲染第二轮beginWork, type === 'div'
     fiberTag = HostComponent;
   } else {
     getTag: switch (type) {
@@ -259,6 +260,12 @@ export function createFiberFromFundamental(
   const fiber = createFiber(FundamentalComponent, pendingProps, key, mode);
   fiber.elementType = fundamentalComponent;
   fiber.type = fundamentalComponent;
+  fiber.lanes = lanes;
+  return fiber;
+}
+
+export function createFiberFromText(content, mode, lanes) {
+  const fiber = createFiber(HostText, content, null, mode);
   fiber.lanes = lanes;
   return fiber;
 }

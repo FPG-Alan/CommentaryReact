@@ -1,7 +1,8 @@
 import { noTimeout } from "../react-dom/ReactDOMHostConfig";
 import { createWorkInProgress } from "./ReactFiber";
 import { beginWork } from "./ReactFiberBeginWork";
-import { PerformedWork } from "./ReactFiberFlags";
+import { completeWork } from "./ReactFiberCompleteWork";
+import { Incomplete, PerformedWork } from "./ReactFiberFlags";
 import { getNextLanes, mergeLanes, NoLanes, SyncLane } from "./ReactFiberLane";
 import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 import { LegacyHiddenComponent, OffscreenComponent } from "./ReactWokTags";
@@ -534,19 +535,18 @@ function performUnitOfWork(unitOfWork) {
 }
 
 // 因为是深度优先搜索, 首次渲染时, 第一个到达这里的 unitOfWork 应该是fiber最深层的节点
-// 在我用于学习的例子里， 这个fiber节点是一个tag = HostText = 6 文本节点
+// 在我用于学习的例子里， 这个fiber节点是一个tag = HostText = 6 文本节点 ("count is: ")
 function completeUnitOfWork(unitOfWork) {
   // Attempt to complete the current unit of work, then move to the next
   // sibling. If there are no more siblings, return to the parent fiber.
   // 完成当前节点的工作
   // 移动到sibling, 若sibling不存在则移动到当前节点的父级
-
   let completedWork = unitOfWork;
   do {
     // The current, flushed, state of this fiber is the alternate. Ideally
     // nothing should rely on this, but relying on it here means that we don't
     // need an additional field on the work in progress.
-    // 如果是首次渲染， 这里的completedWork.alternate应该为null， 此时的wip tree是第一棵完整的fiber tree
+    // 如果是首次渲染， 这里的completedWork.alternate应该为null
     const current = completedWork.alternate;
     // 父级， 应该存在
     const returnFiber = completedWork.return;

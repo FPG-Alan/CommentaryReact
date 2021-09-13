@@ -1,4 +1,7 @@
-import { supportsMutation } from "../react-dom/ReactDOMHostConfig";
+import {
+  createTextInstance,
+  supportsMutation,
+} from "../react-dom/ReactDOMHostConfig";
 import { getRootHostContainer } from "./ReactFiberHostContext";
 
 let appendAllChildren;
@@ -105,8 +108,7 @@ if (supportsMutation) {
 }
 
 // 此函数的返回值是在completeWork阶段产生的新工作， 会交予beiginWork继续执行
-// 暂时我不清楚这是什么场面...
-function completeWork(current, workInProgress, renderLanes) {
+export function completeWork(current, workInProgress, renderLanes) {
   const newProps = workInProgress.pendingProps;
 
   switch (workInProgress.tag) {

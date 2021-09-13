@@ -1,4 +1,7 @@
-import { getRootHostContext } from "../react-dom/ReactDOMHostConfig";
+import {
+  getChildHostContext,
+  getRootHostContext,
+} from "../react-dom/ReactDOMHostConfig";
 import { createCursor, push, pop } from "./ReactFiberStack";
 
 const NO_CONTEXT = {};
@@ -43,4 +46,20 @@ export function pushHostContainer(fiber, nextRootInstance) {
   // Now that we know this function doesn't throw, replace it.
   pop(contextStackCursor, fiber);
   push(contextStackCursor, nextRootContext, fiber);
+}
+
+export function pushHostContext(fiber) {
+  const rootInstance = requiredContext(rootInstanceStackCursor.current);
+  const context = requiredContext(contextStackCursor.current);
+  const nextContext = getChildHostContext(context, fiber.type, rootInstance);
+
+  // Don't push this Fiber's context unless it's unique.
+  if (context === nextContext) {
+    return;
+  }
+
+  // Track the context and the Fiber that provided it.
+  // This enables us to pop only Fibers that provide unique contexts.
+  push(contextFiberStackCursor, fiber, fiber);
+  push(contextStackCursor, nextContext, fiber);
 }

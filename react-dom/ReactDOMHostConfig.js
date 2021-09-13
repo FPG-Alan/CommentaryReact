@@ -34,7 +34,29 @@ export function getRootHostContext(rootContainerInstance) {
   return namespace;
 }
 
+export function getChildHostContext(
+  parentHostContext,
+  type,
+  rootContainerInstance
+) {
+  const parentNamespace = parentHostContext;
+  return getChildNamespace(parentNamespace, type);
+}
+
 export const supportsMutation = true;
+
+export function shouldSetTextContent(type, props) {
+  return (
+    type === "textarea" ||
+    type === "option" ||
+    type === "noscript" ||
+    typeof props.children === "string" ||
+    typeof props.children === "number" ||
+    (typeof props.dangerouslySetInnerHTML === "object" &&
+      props.dangerouslySetInnerHTML !== null &&
+      props.dangerouslySetInnerHTML.__html != null)
+  );
+}
 
 export function createTextInstance(
   text,
