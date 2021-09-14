@@ -646,6 +646,7 @@ function completeUnitOfWork(unitOfWork) {
     // Otherwise, return to the parent
     completedWork = returnFiber;
     // Update the next thing we're working on in case something throws.
+    // 这里没有return， 因此还在complete过程中
     workInProgress = completedWork;
   } while (completedWork !== null);
 
