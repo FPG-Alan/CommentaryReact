@@ -6,7 +6,7 @@ import {
 import { createWorkInProgress } from "./ReactFiber";
 import { beginWork } from "./ReactFiberBeginWork";
 import { completeWork } from "./ReactFiberCompleteWork";
-import { Incomplete, PerformedWork } from "./ReactFiberFlags";
+import { Incomplete, PerformedWork, Update } from "./ReactFiberFlags";
 import { getNextLanes, mergeLanes, NoLanes, SyncLane } from "./ReactFiberLane";
 import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 import { LegacyHiddenComponent, OffscreenComponent } from "./ReactWokTags";
@@ -14,6 +14,10 @@ import {
   getCurrentPriorityLevel,
   runWithPriority,
 } from "./SchedulerWithReactIntergration";
+
+import {
+  commitBeforeMutationLifeCycles as commitBeforeMutationEffectOnFiber,
+} from './ReactFiberCommitWork';
 
 export const NoContext = /*             */ 0b0000000;
 const BatchedContext = /*               */ 0b0000001;
@@ -831,8 +835,7 @@ function commitRootImpl(root, renderPriorityLevel) {
     }
 
     // The next phase is the mutation phase, where we mutate the host tree.
-    // 下面这一坨...对于第一次commit阶段来说, 基本上就是把fiber root.container的textContent给清空了...
-    // 一脸懵逼
+    // host tree, react dom 做宿主的时候就是dom tree
     nextEffect = firstEffect;
     do {
       try {
@@ -853,6 +856,15 @@ function commitRootImpl(root, renderPriorityLevel) {
     // the mutation phase, so that the previous tree is still current during
     // componentWillUnmount, but before the layout phase, so that the finished
     // work is current during componentDidMount/Update.
+    // 切 换 fiber 树了！！！！！
+    // 上面是解释为何切换fiber树只能在commit mutation 和 commit layout effects 之间
+    // 大概的意思呢是为了
+    // 1. componentWillUnmount 生命周期时， current还是旧的树
+    // 2. componentDidMount/Update 时， current是新的树
+    // 
+    // 嗯... componentWillUnmount 应该是在commit mutation期间， classComponent组件， flag = Deletion时调用的
+    // componentDidMount/Update 则是在commit layout effect期间执行的
+    // 所以就是这么回事， 不知道你懂不懂， 我是懂了
     root.current = finishedWork;
 
     // The next phase is the layout phase, where we call effects that read
@@ -874,10 +886,6 @@ function commitRootImpl(root, renderPriorityLevel) {
     // Tell Scheduler to yield at the end of the frame, so the browser has an
     // opportunity to paint.
     requestPaint();
-
-    if (enableSchedulerTracing) {
-      popInteractions(prevInteractions);
-    }
     executionContext = prevExecutionContext;
 
     if (decoupleUpdatePriorityFromScheduler && previousLanePriority != null) {
@@ -890,9 +898,6 @@ function commitRootImpl(root, renderPriorityLevel) {
     // Measure these anyway so the flamegraph explicitly shows that there were
     // no effects.
     // TODO: Maybe there's a better way to report this.
-    if (enableProfilerTimer) {
-      recordCommitTime();
-    }
   }
 
   const rootDidHavePassiveEffects = rootDoesHavePassiveEffects;
@@ -967,8 +972,6 @@ function commitRootImpl(root, renderPriorityLevel) {
     nestedUpdateCount = 0;
   }
 
-  onCommitRootDevTools(finishedWork.stateNode, renderPriorityLevel);
-
   // Always call this before exiting `commitRoot`, to ensure that any
   // additional work on this root is scheduled.
   ensureRootIsScheduled(root, now());
@@ -1002,7 +1005,11 @@ function commitRootImpl(root, renderPriorityLevel) {
   return null;
 }
 
-// commit 第一个小阶段
+/**
+ * commit 第一阶段
+ * 1. 对classComponent,  commitBeforeMutationEffectOnFiber 将调用 getSnapshotBeforeUpdate 生命周期函数
+ * 2. 调度useEffect
+ */
 function commitBeforeMutationEffects() {
   while (nextEffect !== null) {
     const current = nextEffect.alternate;
@@ -1039,6 +1046,7 @@ function commitBeforeMutationEffects() {
     }
 
     // 检测是否存在 Passive flags
+    // 这里的 Passive flag 跟 useEffect 相关
     if ((flags & Passive) !== NoFlags) {
       // If there are passive effects, schedule a callback to flush at
       // the earliest opportunity.
@@ -1053,15 +1061,18 @@ function commitBeforeMutationEffects() {
     nextEffect = nextEffect.nextEffect;
   }
 }
-
+/**
+ * commit 第二阶段
+ * 1. 解绑ref
+ * 2. 根据 fiber flags对dom进行操作(插入/更新/删除)
+ * 3. 上一步 fiber flags == Update = 4 时会执行useLayoutEffect hook的销毁函数
+ */
 function commitMutationEffects(
-  root: FiberRoot,
-  renderPriorityLevel: ReactPriorityLevel
+  root,
+  renderPriorityLevel
 ) {
   // TODO: Should probably move the bulk of this function to commitWork.
   while (nextEffect !== null) {
-    setCurrentDebugFiberInDEV(nextEffect);
-
     const flags = nextEffect.flags;
 
     if (flags & ContentReset) {
@@ -1086,7 +1097,7 @@ function commitMutationEffects(
     // updates, and deletions. To avoid needing to add a case for every possible
     // bitmap value, we remove the secondary effects from the effect tag and
     // switch on that value.
-    const primaryFlags = flags & (Placement | Update | Deletion | Hydrating);
+    const primaryFlags = flags & (Placement | Update | Deletion);
     switch (primaryFlags) {
       case Placement: {
         commitPlacement(nextEffect);
@@ -1109,18 +1120,7 @@ function commitMutationEffects(
         commitWork(current, nextEffect);
         break;
       }
-      case Hydrating: {
-        nextEffect.flags &= ~Hydrating;
-        break;
-      }
-      case HydratingAndUpdate: {
-        nextEffect.flags &= ~Hydrating;
 
-        // Update
-        const current = nextEffect.alternate;
-        commitWork(current, nextEffect);
-        break;
-      }
       case Update: {
         const current = nextEffect.alternate;
         commitWork(current, nextEffect);
@@ -1132,25 +1132,19 @@ function commitMutationEffects(
       }
     }
 
-    resetCurrentDebugFiberInDEV();
     nextEffect = nextEffect.nextEffect;
   }
 }
 
-function commitLayoutEffects(root: FiberRoot, committedLanes: Lanes) {
-  if (__DEV__) {
-    if (enableDebugTracing) {
-      logLayoutEffectsStarted(committedLanes);
-    }
-  }
 
-  if (enableSchedulingProfiler) {
-    markLayoutEffectsStarted(committedLanes);
-  }
-
+/**
+ * commit 第三阶段, 此时dom操作已经做完了
+ * 1. 赋值给ref
+ * 2. 根据fiber.tag执行对应生命周期函数(componentDidMount / Update)或者useLayoutEffect回调
+ */
+function commitLayoutEffects(root, committedLanes) {
   // TODO: Should probably move the bulk of this function to commitWork.
   while (nextEffect !== null) {
-    setCurrentDebugFiberInDEV(nextEffect);
 
     const flags = nextEffect.flags;
 
@@ -1170,19 +1164,7 @@ function commitLayoutEffects(root: FiberRoot, committedLanes: Lanes) {
         commitAttachRef(nextEffect);
       }
     }
-
-    resetCurrentDebugFiberInDEV();
     nextEffect = nextEffect.nextEffect;
-  }
-
-  if (__DEV__) {
-    if (enableDebugTracing) {
-      logLayoutEffectsStopped();
-    }
-  }
-
-  if (enableSchedulingProfiler) {
-    markLayoutEffectsStopped();
   }
 }
 
@@ -1243,6 +1225,92 @@ export function flushPassiveEffects() {
 
   // 初次渲染时， pendingPassiveEffectsRenderPriority为默认值， 90， 应该走这条分路
   return false;
+}
+
+function flushPassiveEffectsImpl() {
+  if (rootWithPendingPassiveEffects === null) {
+    return false;
+  }
+
+  const root = rootWithPendingPassiveEffects;
+  const lanes = pendingPassiveEffectsLanes;
+  rootWithPendingPassiveEffects = null;
+  pendingPassiveEffectsLanes = NoLanes;
+
+  invariant(
+    (executionContext & (RenderContext | CommitContext)) === NoContext,
+    'Cannot flush passive effects while already rendering.',
+  );
+
+  const prevExecutionContext = executionContext;
+  executionContext |= CommitContext;
+  const prevInteractions = pushInteractions(root);
+
+  // It's important that ALL pending passive effect destroy functions are called
+  // before ANY passive effect create functions are called.
+  // Otherwise effects in sibling components might interfere with each other.
+  // e.g. a destroy function in one component may unintentionally override a ref
+  // value set by a create function in another component.
+  // Layout effects have the same constraint.
+
+  // First pass: Destroy stale passive effects.
+  const unmountEffects = pendingPassiveHookEffectsUnmount;
+  pendingPassiveHookEffectsUnmount = [];
+  for (let i = 0; i < unmountEffects.length; i += 2) {
+    const effect = unmountEffects[i];
+    const fiber = unmountEffects[i + 1];
+    const destroy = effect.destroy;
+    effect.destroy = undefined;
+
+
+    if (typeof destroy === 'function') {
+      try {
+        destroy();
+      } catch (error) {
+        invariant(fiber !== null, 'Should be working on an effect.');
+        captureCommitPhaseError(fiber, error);
+      }
+    }
+  }
+  // Second pass: Create new passive effects.
+  const mountEffects = pendingPassiveHookEffectsMount;
+  pendingPassiveHookEffectsMount = [];
+  for (let i = 0; i < mountEffects.length; i += 2) {
+    const effect = mountEffects[i];
+    const fiber = mountEffects[i + 1];
+    try {
+      const create = effect.create;
+      effect.destroy = create();
+    } catch (error) {
+      invariant(fiber !== null, 'Should be working on an effect.');
+      captureCommitPhaseError(fiber, error);
+    }
+  }
+
+  // Note: This currently assumes there are no passive effects on the root fiber
+  // because the root is not part of its own effect list.
+  // This could change in the future.
+  let effect = root.current.firstEffect;
+  while (effect !== null) {
+    const nextNextEffect = effect.nextEffect;
+    // Remove nextEffect pointer to assist GC
+    effect.nextEffect = null;
+    if (effect.flags & Deletion) {
+      detachFiberAfterEffects(effect);
+    }
+    effect = nextNextEffect;
+  }
+
+  executionContext = prevExecutionContext;
+
+  flushSyncCallbackQueue();
+
+  // If additional passive effects were scheduled, increment a counter. If this
+  // exceeds the limit, we'll fire a warning.
+  nestedPassiveUpdateCount =
+    rootWithPendingPassiveEffects === null ? 0 : nestedPassiveUpdateCount + 1;
+
+  return true;
 }
 
 // 设置root上的一些属性
