@@ -371,6 +371,7 @@ export function markSkippedUpdateLanes(lane) {
 
 // This is the entry point for synchronous tasks that don't go
 // through Scheduler
+// 这里的root是fiber root
 function performSyncWorkOnRoot(root) {
   // 初次渲染时，什么都不做
   flushPassiveEffects();
@@ -410,6 +411,7 @@ function performSyncWorkOnRoot(root) {
     exitStatus = renderRootSync(root, lanes);
   }
 
+  // render 阶段后的错误处理
   if (root.tag !== LegacyRoot && exitStatus === RootErrored) {
     executionContext |= RetryAfterError;
 
@@ -479,6 +481,9 @@ function renderRootSync(root, lanes) {
     }
   } while (true);
 
+  // render阶段结束
+  // 重置上下文相关的一些参数
+  // ==================================================================
   resetContextDependencies();
 
   executionContext = prevExecutionContext;
@@ -651,6 +656,7 @@ function completeUnitOfWork(unitOfWork) {
   } while (completedWork !== null);
 
   // We've reached the root.
+  // 所有节点的completeWork的完成(begin work 当然也完成了)
   if (workInProgressRootExitStatus === RootIncomplete) {
     workInProgressRootExitStatus = RootCompleted;
   }

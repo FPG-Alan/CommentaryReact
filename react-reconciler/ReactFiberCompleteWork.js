@@ -132,29 +132,21 @@ export function completeWork(current, workInProgress, renderLanes) {
       return null;
     }
     case HostRoot: {
+      // completeWork来到host root fiber
       popHostContainer(workInProgress);
       popTopLevelLegacyContextObject(workInProgress);
       resetMutableSourceWorkInProgressVersions();
-      const fiberRoot = (workInProgress.stateNode: FiberRoot);
+      const fiberRoot = workInProgress.stateNode;
       if (fiberRoot.pendingContext) {
         fiberRoot.context = fiberRoot.pendingContext;
         fiberRoot.pendingContext = null;
       }
       if (current === null || current.child === null) {
-        // If we hydrated, pop so that we can delete any remaining children
-        // that weren't hydrated.
-        const wasHydrated = popHydrationState(workInProgress);
-        if (wasHydrated) {
-          // If we hydrated, then we'll need to schedule an update for
-          // the commit side-effects on the root.
-          markUpdate(workInProgress);
-        } else if (!fiberRoot.hydrate) {
-          // Schedule an effect to clear this container at the start of the next commit.
-          // This handles the case of React rendering into a container with previous children.
-          // It's also safe to do for updates too, because current.child would only be null
-          // if the previous render was null (so the the container would already be empty).
-          workInProgress.flags |= Snapshot;
-        }
+        // Schedule an effect to clear this container at the start of the next commit.
+        // This handles the case of React rendering into a container with previous children.
+        // It's also safe to do for updates too, because current.child would only be null
+        // if the previous render was null (so the the container would already be empty).
+        workInProgress.flags |= Snapshot;
       }
       updateHostContainer(workInProgress);
       return null;
