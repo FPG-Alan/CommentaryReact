@@ -1,4 +1,8 @@
-import { noTimeout } from "../react-dom/ReactDOMHostConfig";
+import {
+  noTimeout,
+  prepareForCommit,
+  resetAfterCommit,
+} from "../react-dom/ReactDOMHostConfig";
 import { createWorkInProgress } from "./ReactFiber";
 import { beginWork } from "./ReactFiberBeginWork";
 import { completeWork } from "./ReactFiberCompleteWork";
@@ -6,6 +10,10 @@ import { Incomplete, PerformedWork } from "./ReactFiberFlags";
 import { getNextLanes, mergeLanes, NoLanes, SyncLane } from "./ReactFiberLane";
 import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 import { LegacyHiddenComponent, OffscreenComponent } from "./ReactWokTags";
+import {
+  getCurrentPriorityLevel,
+  runWithPriority,
+} from "./SchedulerWithReactIntergration";
 
 export const NoContext = /*             */ 0b0000000;
 const BatchedContext = /*               */ 0b0000001;
@@ -71,6 +79,19 @@ let workInProgressRootPingedLanes = NoLanes;
 // Most things in the work loop should deal with workInProgressRootRenderLanes.
 // Most things in begin/complete phases should deal with subtreeRenderLanes.
 let subtreeRenderLanes = NoLanes;
+
+// Fiber | null
+let nextEffect = null;
+
+// FiberRoot | null
+let rootWithPendingPassiveEffects = null;
+
+// Set<FiberRoot> | null
+let rootsWithPendingDiscreteUpdates = null;
+
+// null | Fiber
+let focusedInstanceHandle = null;
+let shouldFireAfterActiveInstanceBlur = false;
 
 const RENDER_TIMEOUT_MS = 500;
 function resetRenderTimer() {
@@ -560,6 +581,8 @@ function completeUnitOfWork(unitOfWork) {
     // 正常情况下应该是NoFlags = 0, 按位与后应该是NoFlags
     if ((completedWork.flags & Incomplete) === NoFlags) {
       let next;
+      // 生成dom的， 并挂载到fiber.stateNode上
+      // 对于tag = IndeterminateComponent / FunctionComponent / ClassComponent 之类的 “非宿主环境提供的组件”， 基本就是什么都不做
       next = completeWork(current, completedWork, subtreeRenderLanes);
 
       // 上面说completeUnitOfWork可能会产生新的工作就是这里了
@@ -569,7 +592,7 @@ function completeUnitOfWork(unitOfWork) {
         return;
       }
 
-      // 设置fiber.childLanes, 具体为啥暂时不懂
+      // 重置fiber.childLanes, 具体为啥暂时不懂
       resetChildLanes(completedWork);
 
       if (
@@ -617,7 +640,7 @@ function completeUnitOfWork(unitOfWork) {
       }
     } else {
       // 初次渲染时不会走这条分支
-      // 暂时掠过
+      // 暂时掠略过
       // This fiber did not complete because something threw. Pop values off
       // the stack without entering the complete phase. If this is a boundary,
       // capture values if possible.
@@ -659,6 +682,507 @@ function completeUnitOfWork(unitOfWork) {
   // 所有节点的completeWork的完成(begin work 当然也完成了)
   if (workInProgressRootExitStatus === RootIncomplete) {
     workInProgressRootExitStatus = RootCompleted;
+  }
+}
+
+function commitRoot(root) {
+  const renderPriorityLevel = getCurrentPriorityLevel();
+  // ImmediateSchedulerPriority
+  // 等价于直接运行 commitRootImpl
+  runWithPriority(
+    ImmediateSchedulerPriority,
+    commitRootImpl.bind(null, root, renderPriorityLevel)
+  );
+  return null;
+}
+
+function commitRootImpl(root, renderPriorityLevel) {
+  // 暂时不清楚具体什么作用
+  // 反正初次 commit 时 rootWithPendingPassiveEffects === null, 跳过这个循环
+  do {
+    // `flushPassiveEffects` will call `flushSyncUpdateQueue` at the end, which
+    // means `flushPassiveEffects` will sometimes result in additional
+    // passive effects. So we need to keep flushing in a loop until there are
+    // no more pending effects.
+    // TODO: Might be better if `flushPassiveEffects` did not automatically
+    // flush synchronous work at the end, to avoid factoring hazards like this.
+    flushPassiveEffects();
+  } while (rootWithPendingPassiveEffects !== null);
+
+  invariant(
+    (executionContext & (RenderContext | CommitContext)) === NoContext,
+    "Should not already be working."
+  );
+
+  const finishedWork = root.finishedWork;
+  const lanes = root.finishedLanes;
+
+  if (finishedWork === null) {
+    return null;
+  }
+  root.finishedWork = null;
+  root.finishedLanes = NoLanes;
+
+  invariant(
+    finishedWork !== root.current,
+    "Cannot commit the same tree as before. This error is likely caused by " +
+      "a bug in React. Please file an issue."
+  );
+
+  // commitRoot never returns a continuation; it always finishes synchronously.
+  // So we can clear these now to allow a new callback to be scheduled.
+  root.callbackNode = null;
+
+  // Update the first and last pending times on this root. The new first
+  // pending time is whatever is left on the root fiber.
+  // 这边。。。暂时也不明白, lanes相关的东西主要没看到应用， 只有设置， 所以一头雾水。。。也正常。。。吧
+  let remainingLanes = mergeLanes(finishedWork.lanes, finishedWork.childLanes);
+  markRootFinished(root, remainingLanes);
+
+  // Clear already finished discrete updates in case that a later call of
+  // `flushDiscreteUpdates` starts a useless render pass which may cancels
+  // a scheduled timeout.
+  // 离散的更新？？
+  if (rootsWithPendingDiscreteUpdates !== null) {
+    if (
+      !hasDiscreteLanes(remainingLanes) &&
+      rootsWithPendingDiscreteUpdates.has(root)
+    ) {
+      rootsWithPendingDiscreteUpdates.delete(root);
+    }
+  }
+
+  // workInProgressRoot 应该是在 renderRootSync 结束之前被重置为了 null
+  if (root === workInProgressRoot) {
+    // We can reset these now that they are finished.
+    workInProgressRoot = null;
+    workInProgress = null;
+    workInProgressRootRenderLanes = NoLanes;
+  } else {
+    // This indicates that the last root we worked on is not the same one that
+    // we're committing now. This most commonly happens when a suspended root
+    // times out.
+  }
+
+  // Get the list of effects.
+  let firstEffect;
+
+  // finishedWork是Host Root Fiber, 在complete阶段， 其上的flags被设置成了 Snapshot = 256
+  if (finishedWork.flags > PerformedWork) {
+    // A fiber's effect list consists only of its children, not itself. So if
+    // the root has an effect, we need to add it to the end of the list. The
+    // resulting list is the set that would belong to the root's parent, if it
+    // had one; that is, all the effects in the tree including the root.
+    // lastEffect 应该是第一个Host Root Fiber的child节点， 在我学习的例子里就是App函数组件的fiber节点
+    if (finishedWork.lastEffect !== null) {
+      // 这里 finishedWork （Host Root Fiber）放到自己的 App fiber 的 nextEffect 上。。。。
+      // 暂时不懂
+      finishedWork.lastEffect.nextEffect = finishedWork;
+      firstEffect = finishedWork.firstEffect;
+    } else {
+      firstEffect = finishedWork;
+    }
+  } else {
+    // There is no effect on the root.
+    firstEffect = finishedWork.firstEffect;
+  }
+
+  if (firstEffect !== null) {
+    const prevExecutionContext = executionContext;
+
+    // 执行上下文切换为 CommitContext
+    executionContext |= CommitContext;
+
+    // 不懂
+    const prevInteractions = pushInteractions(root);
+
+    // Reset this to null before calling lifecycles
+    ReactCurrentOwner.current = null;
+
+    // The commit phase is broken into several sub-phases. We do a separate pass
+    // of the effect list for each phase: all mutation effects come before all
+    // layout effects, and so on.
+
+    // The first phase a "before mutation" phase. We use this phase to read the
+    // state of the host tree right before we mutate it. This is where
+    // getSnapshotBeforeUpdate is called.
+    // 没啥用， 忽略忽略
+    focusedInstanceHandle = prepareForCommit(root.containerInfo);
+    shouldFireAfterActiveInstanceBlur = false;
+
+    nextEffect = firstEffect;
+    do {
+      try {
+        commitBeforeMutationEffects();
+      } catch (error) {
+        invariant(nextEffect !== null, "Should be working on an effect.");
+        captureCommitPhaseError(nextEffect, error);
+        nextEffect = nextEffect.nextEffect;
+      }
+    } while (nextEffect !== null);
+
+    // We no longer need to track the active instance fiber
+    focusedInstanceHandle = null;
+
+    if (enableProfilerTimer) {
+      // Mark the current commit time to be shared by all Profilers in this
+      // batch. This enables them to be grouped later.
+      recordCommitTime();
+    }
+
+    // The next phase is the mutation phase, where we mutate the host tree.
+    // 下面这一坨...对于第一次commit阶段来说, 基本上就是把fiber root.container的textContent给清空了...
+    // 一脸懵逼
+    nextEffect = firstEffect;
+    do {
+      try {
+        commitMutationEffects(root, renderPriorityLevel);
+      } catch (error) {
+        invariant(nextEffect !== null, "Should be working on an effect.");
+        captureCommitPhaseError(nextEffect, error);
+        nextEffect = nextEffect.nextEffect;
+      }
+    } while (nextEffect !== null);
+
+    if (shouldFireAfterActiveInstanceBlur) {
+      afterActiveInstanceBlur();
+    }
+    resetAfterCommit(root.containerInfo);
+
+    // The work-in-progress tree is now the current tree. This must come after
+    // the mutation phase, so that the previous tree is still current during
+    // componentWillUnmount, but before the layout phase, so that the finished
+    // work is current during componentDidMount/Update.
+    root.current = finishedWork;
+
+    // The next phase is the layout phase, where we call effects that read
+    // the host tree after it's been mutated. The idiomatic use case for this is
+    // layout, but class component lifecycles also fire here for legacy reasons.
+    nextEffect = firstEffect;
+    do {
+      try {
+        commitLayoutEffects(root, lanes);
+      } catch (error) {
+        invariant(nextEffect !== null, "Should be working on an effect.");
+        captureCommitPhaseError(nextEffect, error);
+        nextEffect = nextEffect.nextEffect;
+      }
+    } while (nextEffect !== null);
+
+    nextEffect = null;
+
+    // Tell Scheduler to yield at the end of the frame, so the browser has an
+    // opportunity to paint.
+    requestPaint();
+
+    if (enableSchedulerTracing) {
+      popInteractions(prevInteractions);
+    }
+    executionContext = prevExecutionContext;
+
+    if (decoupleUpdatePriorityFromScheduler && previousLanePriority != null) {
+      // Reset the priority to the previous non-sync value.
+      setCurrentUpdateLanePriority(previousLanePriority);
+    }
+  } else {
+    // No effects.
+    root.current = finishedWork;
+    // Measure these anyway so the flamegraph explicitly shows that there were
+    // no effects.
+    // TODO: Maybe there's a better way to report this.
+    if (enableProfilerTimer) {
+      recordCommitTime();
+    }
+  }
+
+  const rootDidHavePassiveEffects = rootDoesHavePassiveEffects;
+
+  if (rootDoesHavePassiveEffects) {
+    // This commit has passive effects. Stash a reference to them. But don't
+    // schedule a callback until after flushing layout work.
+    rootDoesHavePassiveEffects = false;
+    rootWithPendingPassiveEffects = root;
+    pendingPassiveEffectsLanes = lanes;
+    pendingPassiveEffectsRenderPriority = renderPriorityLevel;
+  } else {
+    // We are done with the effect chain at this point so let's clear the
+    // nextEffect pointers to assist with GC. If we have passive effects, we'll
+    // clear this in flushPassiveEffects.
+    nextEffect = firstEffect;
+    while (nextEffect !== null) {
+      const nextNextEffect = nextEffect.nextEffect;
+      nextEffect.nextEffect = null;
+      if (nextEffect.flags & Deletion) {
+        detachFiberAfterEffects(nextEffect);
+      }
+      nextEffect = nextNextEffect;
+    }
+  }
+
+  // Read this again, since an effect might have updated it
+  remainingLanes = root.pendingLanes;
+
+  // Check if there's remaining work on this root
+  if (remainingLanes !== NoLanes) {
+    if (enableSchedulerTracing) {
+      if (spawnedWorkDuringRender !== null) {
+        const expirationTimes = spawnedWorkDuringRender;
+        spawnedWorkDuringRender = null;
+        for (let i = 0; i < expirationTimes.length; i++) {
+          scheduleInteractions(
+            root,
+            expirationTimes[i],
+            root.memoizedInteractions
+          );
+        }
+      }
+      schedulePendingInteractions(root, remainingLanes);
+    }
+  } else {
+    // If there's no remaining work, we can clear the set of already failed
+    // error boundaries.
+    legacyErrorBoundariesThatAlreadyFailed = null;
+  }
+
+  if (enableSchedulerTracing) {
+    if (!rootDidHavePassiveEffects) {
+      // If there are no passive effects, then we can complete the pending interactions.
+      // Otherwise, we'll wait until after the passive effects are flushed.
+      // Wait to do this until after remaining work has been scheduled,
+      // so that we don't prematurely signal complete for interactions when there's e.g. hidden work.
+      finishPendingInteractions(root, lanes);
+    }
+  }
+
+  if (remainingLanes === SyncLane) {
+    // Count the number of times the root synchronously re-renders without
+    // finishing. If there are too many, it indicates an infinite update loop.
+    if (root === rootWithNestedUpdates) {
+      nestedUpdateCount++;
+    } else {
+      nestedUpdateCount = 0;
+      rootWithNestedUpdates = root;
+    }
+  } else {
+    nestedUpdateCount = 0;
+  }
+
+  onCommitRootDevTools(finishedWork.stateNode, renderPriorityLevel);
+
+  // Always call this before exiting `commitRoot`, to ensure that any
+  // additional work on this root is scheduled.
+  ensureRootIsScheduled(root, now());
+
+  if (hasUncaughtError) {
+    hasUncaughtError = false;
+    const error = firstUncaughtError;
+    firstUncaughtError = null;
+    throw error;
+  }
+
+  if ((executionContext & LegacyUnbatchedContext) !== NoContext) {
+    if (enableSchedulingProfiler) {
+      markCommitStopped();
+    }
+
+    // This is a legacy edge case. We just committed the initial mount of
+    // a ReactDOM.render-ed root inside of batchedUpdates. The commit fired
+    // synchronously, but layout updates should be deferred until the end
+    // of the batch.
+    return null;
+  }
+
+  // If layout work was scheduled, flush it now.
+  flushSyncCallbackQueue();
+
+  if (enableSchedulingProfiler) {
+    markCommitStopped();
+  }
+
+  return null;
+}
+
+// commit 第一个小阶段
+function commitBeforeMutationEffects() {
+  while (nextEffect !== null) {
+    const current = nextEffect.alternate;
+
+    if (!shouldFireAfterActiveInstanceBlur && focusedInstanceHandle !== null) {
+      if ((nextEffect.flags & Deletion) !== NoFlags) {
+        if (doesFiberContain(nextEffect, focusedInstanceHandle)) {
+          shouldFireAfterActiveInstanceBlur = true;
+          beforeActiveInstanceBlur();
+        }
+      } else {
+        // TODO: Move this out of the hot path using a dedicated effect tag.
+        if (
+          nextEffect.tag === SuspenseComponent &&
+          isSuspenseBoundaryBeingHidden(current, nextEffect) &&
+          doesFiberContain(nextEffect, focusedInstanceHandle)
+        ) {
+          shouldFireAfterActiveInstanceBlur = true;
+          beforeActiveInstanceBlur();
+        }
+      }
+    }
+
+    // 第一次循环的时候找的是 host root fiber.child, flags = Placement | PerformedWork = 3
+    // 第二次循环时是 host root fiber, flags = NoFlags | Snapshot = 256
+    // Placement | PerformedWork = 3
+    const flags = nextEffect.flags;
+    // 检测是否有 Snapshot flags
+    if ((flags & Snapshot) !== NoFlags) {
+      // 此时， nextEffect 就是 host root fiber， current 也存在
+      // 对于 host root fiber, 这个函数就是清除了fiber root.container的文本信息(textContent)
+      // 暂时不知道这样做是为了啥
+      commitBeforeMutationEffectOnFiber(current, nextEffect);
+    }
+
+    // 检测是否存在 Passive flags
+    if ((flags & Passive) !== NoFlags) {
+      // If there are passive effects, schedule a callback to flush at
+      // the earliest opportunity.
+      if (!rootDoesHavePassiveEffects) {
+        rootDoesHavePassiveEffects = true;
+        scheduleCallback(NormalSchedulerPriority, () => {
+          flushPassiveEffects();
+          return null;
+        });
+      }
+    }
+    nextEffect = nextEffect.nextEffect;
+  }
+}
+
+function commitMutationEffects(
+  root: FiberRoot,
+  renderPriorityLevel: ReactPriorityLevel
+) {
+  // TODO: Should probably move the bulk of this function to commitWork.
+  while (nextEffect !== null) {
+    setCurrentDebugFiberInDEV(nextEffect);
+
+    const flags = nextEffect.flags;
+
+    if (flags & ContentReset) {
+      commitResetTextContent(nextEffect);
+    }
+
+    if (flags & Ref) {
+      const current = nextEffect.alternate;
+      if (current !== null) {
+        commitDetachRef(current);
+      }
+      if (enableScopeAPI) {
+        // TODO: This is a temporary solution that allowed us to transition away
+        // from React Flare on www.
+        if (nextEffect.tag === ScopeComponent) {
+          commitAttachRef(nextEffect);
+        }
+      }
+    }
+
+    // The following switch statement is only concerned about placement,
+    // updates, and deletions. To avoid needing to add a case for every possible
+    // bitmap value, we remove the secondary effects from the effect tag and
+    // switch on that value.
+    const primaryFlags = flags & (Placement | Update | Deletion | Hydrating);
+    switch (primaryFlags) {
+      case Placement: {
+        commitPlacement(nextEffect);
+        // Clear the "placement" from effect tag so that we know that this is
+        // inserted, before any life-cycles like componentDidMount gets called.
+        // TODO: findDOMNode doesn't rely on this any more but isMounted does
+        // and isMounted is deprecated anyway so we should be able to kill this.
+        nextEffect.flags &= ~Placement;
+        break;
+      }
+      case PlacementAndUpdate: {
+        // Placement
+        commitPlacement(nextEffect);
+        // Clear the "placement" from effect tag so that we know that this is
+        // inserted, before any life-cycles like componentDidMount gets called.
+        nextEffect.flags &= ~Placement;
+
+        // Update
+        const current = nextEffect.alternate;
+        commitWork(current, nextEffect);
+        break;
+      }
+      case Hydrating: {
+        nextEffect.flags &= ~Hydrating;
+        break;
+      }
+      case HydratingAndUpdate: {
+        nextEffect.flags &= ~Hydrating;
+
+        // Update
+        const current = nextEffect.alternate;
+        commitWork(current, nextEffect);
+        break;
+      }
+      case Update: {
+        const current = nextEffect.alternate;
+        commitWork(current, nextEffect);
+        break;
+      }
+      case Deletion: {
+        commitDeletion(root, nextEffect, renderPriorityLevel);
+        break;
+      }
+    }
+
+    resetCurrentDebugFiberInDEV();
+    nextEffect = nextEffect.nextEffect;
+  }
+}
+
+function commitLayoutEffects(root: FiberRoot, committedLanes: Lanes) {
+  if (__DEV__) {
+    if (enableDebugTracing) {
+      logLayoutEffectsStarted(committedLanes);
+    }
+  }
+
+  if (enableSchedulingProfiler) {
+    markLayoutEffectsStarted(committedLanes);
+  }
+
+  // TODO: Should probably move the bulk of this function to commitWork.
+  while (nextEffect !== null) {
+    setCurrentDebugFiberInDEV(nextEffect);
+
+    const flags = nextEffect.flags;
+
+    if (flags & (Update | Callback)) {
+      const current = nextEffect.alternate;
+      commitLayoutEffectOnFiber(root, current, nextEffect, committedLanes);
+    }
+
+    if (enableScopeAPI) {
+      // TODO: This is a temporary solution that allowed us to transition away
+      // from React Flare on www.
+      if (flags & Ref && nextEffect.tag !== ScopeComponent) {
+        commitAttachRef(nextEffect);
+      }
+    } else {
+      if (flags & Ref) {
+        commitAttachRef(nextEffect);
+      }
+    }
+
+    resetCurrentDebugFiberInDEV();
+    nextEffect = nextEffect.nextEffect;
+  }
+
+  if (__DEV__) {
+    if (enableDebugTracing) {
+      logLayoutEffectsStopped();
+    }
+  }
+
+  if (enableSchedulingProfiler) {
+    markLayoutEffectsStopped();
   }
 }
 

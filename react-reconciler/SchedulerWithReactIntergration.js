@@ -42,32 +42,32 @@ if (enableSchedulerTracing) {
   );
 }
 
-export type SchedulerCallback = (isSync: boolean) => SchedulerCallback | null;
+// export type SchedulerCallback = (isSync: boolean) => SchedulerCallback | null;
 
-type SchedulerCallbackOptions = { timeout?: number, ... };
+// type SchedulerCallbackOptions = { timeout?: number, ... };
 
 const fakeCallbackNode = {};
 
 // Except for NoPriority, these correspond to Scheduler priorities. We use
 // ascending numbers so we can compare them like numbers. They start at 90 to
 // avoid clashing with Scheduler's priorities.
-export const ImmediatePriority: ReactPriorityLevel = 99;
-export const UserBlockingPriority: ReactPriorityLevel = 98;
-export const NormalPriority: ReactPriorityLevel = 97;
-export const LowPriority: ReactPriorityLevel = 96;
-export const IdlePriority: ReactPriorityLevel = 95;
+export const ImmediatePriority = 99;
+export const UserBlockingPriority = 98;
+export const NormalPriority = 97;
+export const LowPriority = 96;
+export const IdlePriority = 95;
 // NoPriority is the absence of priority. Also React-only.
-export const NoPriority: ReactPriorityLevel = 90;
+export const NoPriority = 90;
 
 export const shouldYield = Scheduler_shouldYield;
 export const requestPaint =
   // Fall back gracefully if we're running an older version of Scheduler.
   Scheduler_requestPaint !== undefined ? Scheduler_requestPaint : () => {};
 
-let syncQueue: Array<SchedulerCallback> | null = null;
-let immediateQueueCallbackNode: mixed | null = null;
-let isFlushingSyncQueue: boolean = false;
-const initialTimeMs: number = Scheduler_now();
+let syncQueue = null;
+let immediateQueueCallbackNode = null;
+let isFlushingSyncQueue = false;
+const initialTimeMs = Scheduler_now();
 
 // If the initial timestamp is reasonably small, use Scheduler's `now` directly.
 // This will be the case for modern browsers that support `performance.now`. In
@@ -79,7 +79,10 @@ const initialTimeMs: number = Scheduler_now();
 export const now =
   initialTimeMs < 10000 ? Scheduler_now : () => Scheduler_now() - initialTimeMs;
 
-export function getCurrentPriorityLevel(): ReactPriorityLevel {
+export function getCurrentPriorityLevel() {
+  // 来自于独立库scheduler
+  // ImmediatePriority = 1; UserBlockingPriority = 2; NormalPriority = 3; LowPriority = 4; IdlePriority = 5;
+  // 默认为NormalPriority
   switch (Scheduler_getCurrentPriorityLevel()) {
     case Scheduler_ImmediatePriority:
       return ImmediatePriority;
@@ -113,24 +116,17 @@ function reactPriorityToSchedulerPriority(reactPriorityLevel) {
   }
 }
 
-export function runWithPriority<T>(
-  reactPriorityLevel: ReactPriorityLevel,
-  fn: () => T
-): T {
+export function runWithPriority(reactPriorityLevel, fn) {
   const priorityLevel = reactPriorityToSchedulerPriority(reactPriorityLevel);
   return Scheduler_runWithPriority(priorityLevel, fn);
 }
 
-export function scheduleCallback(
-  reactPriorityLevel: ReactPriorityLevel,
-  callback: SchedulerCallback,
-  options: SchedulerCallbackOptions | void | null
-) {
+export function scheduleCallback(reactPriorityLevel, callback, options) {
   const priorityLevel = reactPriorityToSchedulerPriority(reactPriorityLevel);
   return Scheduler_scheduleCallback(priorityLevel, callback, options);
 }
 
-export function scheduleSyncCallback(callback: SchedulerCallback) {
+export function scheduleSyncCallback(callback) {
   // Push this callback into an internal queue. We'll flush these either in
   // the next tick, or earlier if something calls `flushSyncCallbackQueue`.
   if (syncQueue === null) {
@@ -148,7 +144,7 @@ export function scheduleSyncCallback(callback: SchedulerCallback) {
   return fakeCallbackNode;
 }
 
-export function cancelCallback(callbackNode: mixed) {
+export function cancelCallback(callbackNode) {
   if (callbackNode !== fakeCallbackNode) {
     Scheduler_cancelCallback(callbackNode);
   }

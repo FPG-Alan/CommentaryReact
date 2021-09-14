@@ -1,9 +1,11 @@
 import {
   Block,
+  ClassComponent,
   ContextConsumer,
   ContextProvider,
   ForwardRef,
   FundamentalComponent,
+  HostComponent,
   HostRoot,
   IndeterminateComponent,
   LazyComponent,

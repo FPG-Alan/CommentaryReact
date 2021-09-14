@@ -2,7 +2,9 @@ import {
   createTextInstance,
   supportsMutation,
 } from "../react-dom/ReactDOMHostConfig";
+import { Snapshot } from "./ReactFiberFlags";
 import { getRootHostContainer } from "./ReactFiberHostContext";
+import { FunctionComponent, HostComponent, HostRoot } from "./ReactWokTags";
 
 let appendAllChildren;
 let updateHostContainer;
@@ -141,13 +143,19 @@ export function completeWork(current, workInProgress, renderLanes) {
         fiberRoot.context = fiberRoot.pendingContext;
         fiberRoot.pendingContext = null;
       }
+
+      // 初次渲染， current是没有child的
+      // wip倒是有， 此时wip比current完整
       if (current === null || current.child === null) {
         // Schedule an effect to clear this container at the start of the next commit.
         // This handles the case of React rendering into a container with previous children.
         // It's also safe to do for updates too, because current.child would only be null
         // if the previous render was null (so the the container would already be empty).
+        // 这里HostRoot的flags其实就是Snapshot, 这个会影响后面effectList的生成和commit阶段的工作
         workInProgress.flags |= Snapshot;
       }
+
+      // 这个函数啥都不做。。。
       updateHostContainer(workInProgress);
       return null;
     }
