@@ -10,12 +10,27 @@ import { Incomplete, PerformedWork, Update } from "./ReactFiberFlags";
 import { getNextLanes, mergeLanes, NoLanes, SyncLane } from "./ReactFiberLane";
 import { BlockingMode, ConcurrentMode, NoMode } from "./ReactTypeOfMode";
 import { LegacyHiddenComponent, OffscreenComponent } from "./ReactWokTags";
+
 import {
+  scheduleCallback,
+  cancelCallback,
   getCurrentPriorityLevel,
   runWithPriority,
-} from "./SchedulerWithReactIntergration";
+  shouldYield,
+  requestPaint,
+  now,
+  NoPriority as NoSchedulerPriority,
+  ImmediatePriority as ImmediateSchedulerPriority,
+  UserBlockingPriority as UserBlockingSchedulerPriority,
+  NormalPriority as NormalSchedulerPriority,
+  flushSyncCallbackQueue,
+  scheduleSyncCallback,
+} from "./SchedulerWithReactIntegration";
 
-import { commitBeforeMutationLifeCycles as commitBeforeMutationEffectOnFiber } from "./ReactFiberCommitWork";
+import {
+  commitBeforeMutationLifeCycles as commitBeforeMutationEffectOnFiber,
+  commitLifeCycles as commitLayoutEffectOnFiber,
+} from "./ReactFiberCommitWork";
 
 export const NoContext = /*             */ 0b0000000;
 const BatchedContext = /*               */ 0b0000001;
@@ -85,9 +100,14 @@ let subtreeRenderLanes = NoLanes;
 // Fiber | null
 let nextEffect = null;
 
+let rootDoesHavePassiveEffects = false;
 // FiberRoot | null
 let rootWithPendingPassiveEffects = null;
-
+let pendingPassiveEffectsRenderPriority = NoSchedulerPriority;
+let pendingPassiveEffectsLanes = NoLanes;
+let pendingPassiveHookEffectsMount = [];
+let pendingPassiveHookEffectsUnmount = [];
+let pendingPassiveProfilerEffects = [];
 // Set<FiberRoot> | null
 let rootsWithPendingDiscreteUpdates = null;
 
@@ -644,8 +664,8 @@ function completeUnitOfWork(unitOfWork) {
         // Skip both NoWork and PerformedWork tags when creating the effect
         // list. PerformedWork effect is read by React DevTools but shouldn't be
         // committed.
-        // 如果当前fiber节点的flags不是NoFlags或PerformedWork， 把这个节点本身加到父级的副作用列表上
-        // 为啥要这样暂时也不知道
+        // 如果当前fiber节点的flags不是NoFlags或PerformedWork， 代表这个节点需要在commit阶段做一些事情(暂时的理解， 副作用？)
+        // 这里把这个节点加到父级的effect链表中
         if (flags > PerformedWork) {
           if (returnFiber.lastEffect !== null) {
             returnFiber.lastEffect.nextEffect = completedWork;
@@ -657,7 +677,7 @@ function completeUnitOfWork(unitOfWork) {
       }
     } else {
       // 初次渲染时不会走这条分支
-      // 暂时掠略过
+      // 暂时略过
       // This fiber did not complete because something threw. Pop values off
       // the stack without entering the complete phase. If this is a boundary,
       // capture values if possible.
@@ -793,7 +813,7 @@ function commitRootImpl(root, renderPriorityLevel) {
     // lastEffect 应该是第一个Host Root Fiber的child节点， 在我学习的例子里就是App函数组件的fiber节点
     if (finishedWork.lastEffect !== null) {
       // 这里 finishedWork （Host Root Fiber）放到自己的 App fiber 的 nextEffect 上。。。。
-      // 暂时不懂
+      // 就是说无论怎么样， host root fiber都会是commitBeforeMutationEffects循环的最后一个effect
       finishedWork.lastEffect.nextEffect = finishedWork;
       firstEffect = finishedWork.firstEffect;
     } else {
@@ -811,7 +831,7 @@ function commitRootImpl(root, renderPriorityLevel) {
     executionContext |= CommitContext;
 
     // 不懂
-    const prevInteractions = pushInteractions(root);
+    // const prevInteractions = pushInteractions(root);
 
     // Reset this to null before calling lifecycles
     ReactCurrentOwner.current = null;
@@ -849,6 +869,7 @@ function commitRootImpl(root, renderPriorityLevel) {
 
     // The next phase is the mutation phase, where we mutate the host tree.
     // host tree, react dom 做宿主的时候就是dom tree
+    // nextEffect重新移动到第一个Effect, 换个姿势再来一次
     nextEffect = firstEffect;
     do {
       try {
@@ -1027,6 +1048,7 @@ function commitBeforeMutationEffects() {
   while (nextEffect !== null) {
     const current = nextEffect.alternate;
 
+    // 这一坨暂时不管
     if (!shouldFireAfterActiveInstanceBlur && focusedInstanceHandle !== null) {
       if ((nextEffect.flags & Deletion) !== NoFlags) {
         if (doesFiberContain(nextEffect, focusedInstanceHandle)) {
@@ -1065,6 +1087,8 @@ function commitBeforeMutationEffects() {
       // the earliest opportunity.
       if (!rootDoesHavePassiveEffects) {
         rootDoesHavePassiveEffects = true;
+
+        // 那么这个就是异步调用的 useEffect
         scheduleCallback(NormalSchedulerPriority, () => {
           flushPassiveEffects();
           return null;
@@ -1158,6 +1182,9 @@ function commitLayoutEffects(root, committedLanes) {
 
     if (flags & (Update | Callback)) {
       const current = nextEffect.alternate;
+      // 根据fiber.tag调用commit阶段的生命周期函数
+      // classCompnenet: componentDidMount / Update
+      // functionComponenet: useLayoutEffect
       commitLayoutEffectOnFiber(root, current, nextEffect, committedLanes);
     }
 
@@ -1233,6 +1260,29 @@ export function flushPassiveEffects() {
 
   // 初次渲染时， pendingPassiveEffectsRenderPriority为默认值， 90， 应该走这条分路
   return false;
+}
+
+export function enqueuePendingPassiveHookEffectMount(fiber, effect) {
+  pendingPassiveHookEffectsMount.push(effect, fiber);
+  if (!rootDoesHavePassiveEffects) {
+    rootDoesHavePassiveEffects = true;
+    scheduleCallback(NormalSchedulerPriority, () => {
+      flushPassiveEffects();
+      return null;
+    });
+  }
+}
+
+export function enqueuePendingPassiveHookEffectUnmount(fiber, effect) {
+  pendingPassiveHookEffectsUnmount.push(effect, fiber);
+
+  if (!rootDoesHavePassiveEffects) {
+    rootDoesHavePassiveEffects = true;
+    scheduleCallback(NormalSchedulerPriority, () => {
+      flushPassiveEffects();
+      return null;
+    });
+  }
 }
 
 function flushPassiveEffectsImpl() {
