@@ -15,9 +15,7 @@ import {
   runWithPriority,
 } from "./SchedulerWithReactIntergration";
 
-import {
-  commitBeforeMutationLifeCycles as commitBeforeMutationEffectOnFiber,
-} from './ReactFiberCommitWork';
+import { commitBeforeMutationLifeCycles as commitBeforeMutationEffectOnFiber } from "./ReactFiberCommitWork";
 
 export const NoContext = /*             */ 0b0000000;
 const BatchedContext = /*               */ 0b0000001;
@@ -118,6 +116,21 @@ export function unbatchedUpdates(fn, a) {
       flushSyncCallbackQueue();
     }
   }
+}
+
+export function requestEventTime() {
+  if ((executionContext & (RenderContext | CommitContext)) !== NoContext) {
+    // We're inside React, so it's fine to read the actual time.
+    return window.performance.now();
+  }
+  // We're not inside React, so we may be in the middle of a browser event.
+  if (currentEventTime !== NoTimestamp) {
+    // Use the same start time for all updates until we enter React again.
+    return currentEventTime;
+  }
+  // This is the first update since React yielded. Compute a new start time.
+  currentEventTime = window.performance.now;
+  return currentEventTime;
 }
 
 export function requestUpdateLane(fiber) {
@@ -861,7 +874,7 @@ function commitRootImpl(root, renderPriorityLevel) {
     // 大概的意思呢是为了
     // 1. componentWillUnmount 生命周期时， current还是旧的树
     // 2. componentDidMount/Update 时， current是新的树
-    // 
+    //
     // 嗯... componentWillUnmount 应该是在commit mutation期间， classComponent组件， flag = Deletion时调用的
     // componentDidMount/Update 则是在commit layout effect期间执行的
     // 所以就是这么回事， 不知道你懂不懂， 我是懂了
@@ -1067,10 +1080,7 @@ function commitBeforeMutationEffects() {
  * 2. 根据 fiber flags对dom进行操作(插入/更新/删除)
  * 3. 上一步 fiber flags == Update = 4 时会执行useLayoutEffect hook的销毁函数
  */
-function commitMutationEffects(
-  root,
-  renderPriorityLevel
-) {
+function commitMutationEffects(root, renderPriorityLevel) {
   // TODO: Should probably move the bulk of this function to commitWork.
   while (nextEffect !== null) {
     const flags = nextEffect.flags;
@@ -1136,7 +1146,6 @@ function commitMutationEffects(
   }
 }
 
-
 /**
  * commit 第三阶段, 此时dom操作已经做完了
  * 1. 赋值给ref
@@ -1145,7 +1154,6 @@ function commitMutationEffects(
 function commitLayoutEffects(root, committedLanes) {
   // TODO: Should probably move the bulk of this function to commitWork.
   while (nextEffect !== null) {
-
     const flags = nextEffect.flags;
 
     if (flags & (Update | Callback)) {
@@ -1239,7 +1247,7 @@ function flushPassiveEffectsImpl() {
 
   invariant(
     (executionContext & (RenderContext | CommitContext)) === NoContext,
-    'Cannot flush passive effects while already rendering.',
+    "Cannot flush passive effects while already rendering."
   );
 
   const prevExecutionContext = executionContext;
@@ -1262,12 +1270,11 @@ function flushPassiveEffectsImpl() {
     const destroy = effect.destroy;
     effect.destroy = undefined;
 
-
-    if (typeof destroy === 'function') {
+    if (typeof destroy === "function") {
       try {
         destroy();
       } catch (error) {
-        invariant(fiber !== null, 'Should be working on an effect.');
+        invariant(fiber !== null, "Should be working on an effect.");
         captureCommitPhaseError(fiber, error);
       }
     }
@@ -1282,7 +1289,7 @@ function flushPassiveEffectsImpl() {
       const create = effect.create;
       effect.destroy = create();
     } catch (error) {
-      invariant(fiber !== null, 'Should be working on an effect.');
+      invariant(fiber !== null, "Should be working on an effect.");
       captureCommitPhaseError(fiber, error);
     }
   }
