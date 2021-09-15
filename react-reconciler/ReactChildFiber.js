@@ -15,6 +15,7 @@ import {
 } from "../shared/ReactSymbols";
 
 import { createFiberFromElement } from "./ReactFiber";
+import { Placement } from "./ReactFiberFlags";
 
 // 胁迫...ref???
 function coerceRef(returnFiber, current, element) {
