@@ -1,4 +1,5 @@
 import { noTimeout } from "../react-dom/ReactDOMHostConfig";
+import { createHostRootFiber } from "./ReactFiber";
 import {
   createLaneMap,
   NoLanePriority,

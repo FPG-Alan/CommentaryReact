@@ -2,6 +2,7 @@ import {
   getPublicRootInstance,
   updateContainer,
 } from "../react-reconciler/ReactFiberReconciler";
+import { unbatchedUpdates } from "../react-reconciler/ReactFiberWorkLoop";
 import { createLegacyRoot } from "./ReactDOMRoot";
 
 export function render(element, container, callback) {

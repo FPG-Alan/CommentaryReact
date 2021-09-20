@@ -1,7 +1,7 @@
 import { getPublicInstance } from "../react-dom/ReactDOMHostConfig";
 import { createFiberRoot } from "./ReactFiberRoot";
 import { scheduleUpdateOnFiber } from "./ReactFiberWorkLoop";
-import { enqueueUpdate } from "./ReactUpdateQueue";
+import { createUpdate, enqueueUpdate } from "./ReactUpdateQueue";
 import { HostComponent } from "./ReactWokTags";
 
 export function createContainer(containerInfo, tag) {
