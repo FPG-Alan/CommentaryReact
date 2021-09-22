@@ -163,6 +163,7 @@ export function completeWork(current, workInProgress, renderLanes) {
       popHostContext(workInProgress);
       const rootContainerInstance = getRootHostContainer();
       const type = workInProgress.type;
+      // current 和 wip.stateNode 都存在， 说明wip是一个复用的组件
       if (current !== null && workInProgress.stateNode != null) {
         updateHostComponent(
           current,
@@ -207,6 +208,7 @@ export function completeWork(current, workInProgress, renderLanes) {
             markUpdate(workInProgress);
           }
         } else {
+          // 创建dom
           const instance = createInstance(
             type,
             newProps,
@@ -214,7 +216,7 @@ export function completeWork(current, workInProgress, renderLanes) {
             currentHostContext,
             workInProgress
           );
-
+          // dom appendChild wip下child中tag为HostComponent / HostText的
           appendAllChildren(instance, workInProgress, false, false);
 
           workInProgress.stateNode = instance;
