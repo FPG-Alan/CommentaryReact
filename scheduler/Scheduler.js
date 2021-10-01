@@ -77,11 +77,16 @@ var isPerformingWork = false;
 var isHostCallbackScheduled = false;
 var isHostTimeoutScheduled = false;
 
+/**
+ * 检查timerQueue看看是否有任务已经过期了
+ * 如果过期了, 把这个task取出来放到taskQueue, 依然是按照expirationTime来排序
+ */
 function advanceTimers(currentTime) {
   // Check for tasks that are no longer delayed and add them to the queue.
   let timer = peek(timerQueue);
   while (timer !== null) {
     if (timer.callback === null) {
+      // 这里可以看到, delay的task是可以取消的, 就是把task.callBack置为null
       // Timer was cancelled.
       pop(timerQueue);
     } else if (timer.startTime <= currentTime) {
@@ -163,11 +168,14 @@ function flushWork(hasTimeRemaining, initialTime) {
 function workLoop(hasTimeRemaining, initialTime) {
   let currentTime = initialTime;
   advanceTimers(currentTime);
+  // 选出当前过期时间最小的(优先级最高的, 或者说最需要执行的...)任务
   currentTask = peek(taskQueue);
-  while (
-    currentTask !== null &&
-    !(enableSchedulerDebugging && isSchedulerPaused)
-  ) {
+
+  while (currentTask !== null) {
+    // 这里有意思了, 跳出循环的条件是两个
+    // 1. 当前任务没有过期
+    // 2. 时间片耗尽
+    // 重点是这两个条件是and的关系， 换句话说， 如果当前任务已经过期了， 那不管时间片有没有耗尽， 都需要继续执行下去
     if (
       currentTask.expirationTime > currentTime &&
       (!hasTimeRemaining || shouldYieldToHost())
@@ -177,6 +185,7 @@ function workLoop(hasTimeRemaining, initialTime) {
     }
     const callback = currentTask.callback;
     if (typeof callback === "function") {
+      // 任务返回的还是函数， 说明工作没做完
       currentTask.callback = null;
       currentPriorityLevel = currentTask.priorityLevel;
       const didUserCallbackTimeout = currentTask.expirationTime <= currentTime;
@@ -201,8 +210,12 @@ function workLoop(hasTimeRemaining, initialTime) {
       }
       advanceTimers(currentTime);
     } else {
+      // 工作做完了， 出列
       pop(taskQueue);
     }
+
+    // 如果上一个工作做完了， 这里取下一个工作
+    // 如果上一个工作没有做完， 这里下一个工作还是之前那个
     currentTask = peek(taskQueue);
   }
   // Return whether there's additional work
@@ -279,22 +292,30 @@ function unstable_wrapCallback(callback) {
   };
 }
 
+/**
+ * 异步调度入口
+ */
 function unstable_scheduleCallback(priorityLevel, callback, options) {
+  // window.performance.now()
   var currentTime = getCurrentTime();
 
+  // 检查是否有options.delay
   var startTime;
   if (typeof options === "object" && options !== null) {
     var delay = options.delay;
     if (typeof delay === "number" && delay > 0) {
+      // 存在delay, startTime相应延迟
       startTime = currentTime + delay;
     } else {
       startTime = currentTime;
     }
   } else {
+    // 无, 开始时间就是当前时间
     startTime = currentTime;
   }
 
   var timeout;
+  // 根据优先级得到到期时间
   switch (priorityLevel) {
     case ImmediatePriority:
       timeout = IMMEDIATE_PRIORITY_TIMEOUT;
@@ -314,8 +335,10 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
       break;
   }
 
+  // 当前时间 + 到期时间 = 过期时间
   var expirationTime = startTime + timeout;
 
+  // 生成一个任务对象
   var newTask = {
     id: taskIdCounter++,
     callback,
@@ -329,21 +352,34 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
   }
 
   if (startTime > currentTime) {
+    // 开始时间比当前时间大， 那么这个任务需要被延迟执行
     // This is a delayed task.
+    // sortIndex用于小顶堆的排序
     newTask.sortIndex = startTime;
+
+    // 延迟执行的任务推到timerQueue队列上， 按照startTime， 最小的排在最前面
     push(timerQueue, newTask);
+
     if (peek(taskQueue) === null && newTask === peek(timerQueue)) {
+      // 如果当前没有过期(需要执行的任务)， 并且在所有延迟执行的任务中， 当前任务就是第一个需要执行的那个(startTime离now最近， 或者说， startTime最小)
       // All tasks are delayed, and this is the task with the earliest delay.
+
+      // 如果已经调用了host的timeOut, 取消先
       if (isHostTimeoutScheduled) {
         // Cancel an existing timeout.
         cancelHostTimeout();
       } else {
+        // 如果还没有调用, 翻转对应标志
         isHostTimeoutScheduled = true;
       }
-      // Schedule a timeout.
+
+      // 调度一个宿主环境下的timeout
+      // 基本上呢...就是setTimeout...
       requestHostTimeout(handleTimeout, startTime - currentTime);
     }
   } else {
+    // 到这里, 我们可以知道这是一个没有delay的任务
+    // 根据 expirationTime 来排序, 推入 taskQueue
     newTask.sortIndex = expirationTime;
     push(taskQueue, newTask);
     if (enableProfiling) {
@@ -352,7 +388,12 @@ function unstable_scheduleCallback(priorityLevel, callback, options) {
     }
     // Schedule a host callback, if needed. If we're already performing work,
     // wait until the next time we yield.
+    // 如果当前正在执行任务， 那么什么都不做
     if (!isHostCallbackScheduled && !isPerformingWork) {
+      // 如果当前任务执行器没有被调度, 并且没有在执行任务就调度一个任务执行器
+      // 1. 翻转 isHostCallbackScheduled 标志
+      // 2. 调度一个任务执行器
+
       isHostCallbackScheduled = true;
       requestHostCallback(flushWork);
     }

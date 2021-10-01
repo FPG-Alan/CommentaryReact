@@ -10,6 +10,7 @@ import {
 } from "./ReactWokTags";
 import {
   REACT_ELEMENT_TYPE,
+  REACT_FRAGMENT_TYPE,
   REACT_LAZY_TYPE,
   REACT_PORTAL_TYPE,
 } from "../shared/ReactSymbols";
